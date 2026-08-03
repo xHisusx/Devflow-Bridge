@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:developers.plane.so)",
+      "WebFetch(domain:www.pachca.com)",
+      "WebFetch(domain:crm.pachca.com)",
+      "WebFetch(domain:pachca.com)",
+      "WebFetch(domain:dev.pachca.com)",
+      "WebFetch(domain:docs.plane.so)",
+      "WebFetch(domain:support.helpdeskeddy.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(bun init:*)",
+      "Bash(bun add:*)",
+      "Bash(bun build:*)",
+      "Bash(bun remove:*)",
+      "Bash(wc -l /e/Work/plane-pachka/src/*.ts)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:api.pachca.com)",
+      "Bash(npx tsc:*)",
+      "Bash(find /e/Work/plane-pachka -type f \\\\\\(-name *.test.ts -o -name *.spec.ts -o -name jest.config.* -o -name vitest.config.* -o -name .gitignore \\\\\\))",
+      "Bash(bun test:*)",
+      "Bash(bunx tsc:*)",
+      "Bash(bun run:*)"
+    ],
+    "additionalDirectories": [
+      "e:\\Work\\plane-pachka"
+    ]
+  }
+}

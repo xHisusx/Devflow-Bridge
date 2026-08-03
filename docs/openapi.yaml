@@ -1,0 +1,396 @@
+openapi: 3.1.0
+info:
+  title: Plane-Pachka Bridge API
+  description: |
+    Мост между Plane (project management) и Пачкой (мессенджер).
+    Принимает вебхуки от Plane, отправляет уведомления в Пачку,
+    а также позволяет создавать задачи в Plane Intake.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+
+  /webhook/plane:
+    post:
+      summary: Приём вебхуков от Plane
+      operationId: planeWebhook
+      description: |
+        Принимает вебхуки от Plane, матчит правила из config.json
+        и отправляет уведомления в Пачку.
+      parameters:
+        - name: x-plane-event
+          in: header
+          schema:
+            type: string
+          description: Тип сущности (issue, work_item, project, cycle, module, issue_comment)
+        - name: x-plane-signature
+          in: header
+          schema:
+            type: string
+          description: HMAC-SHA256 подпись (если PLANE_WEBHOOK_SECRET задан)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlaneWebhookPayload"
+      responses:
+        "200":
+          description: Вебхук обработан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  sent:
+                    type: integer
+                    description: Количество отправленных уведомлений
+        "401":
+          description: Невалидная подпись
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /webhook/pachka:
+    post:
+      summary: Callback от Пачки
+      operationId: pachkaCallback
+      description: Обработка callback-ов от интерактивных кнопок Пачки.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message_id:
+                  type: integer
+                user_id:
+                  type: integer
+                data:
+                  type: string
+      responses:
+        "200":
+          description: Callback обработан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /webhook/taiga:
+    post:
+      summary: Приём вебхуков от Taiga
+      operationId: taigaWebhook
+      description: |
+        Принимает вебхуки Taiga (Settings → Integrations → Webhooks). При смене статуса
+        item'а кнопки и текст отслеживаемого сообщения в Пачке синхронизируются с новым
+        статусом. Провайдер определяется по slug проекта из `data.project.permalink`.
+        Тестовый пинг (`action: "test"`) отвечает `200 ok`.
+      parameters:
+        - name: x-taiga-webhook-signature
+          in: header
+          schema:
+            type: string
+          description: HMAC-SHA1 подпись raw body (проверяется, если задан TAIGA_WEBHOOK_SECRET)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Стандартный payload вебхука Taiga
+      responses:
+        "200":
+          description: Вебхук обработан
+        "401":
+          description: Невалидная подпись
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/plane/intake-issues:
+    post:
+      summary: Создать задачу в Plane (intake pipeline)
+      operationId: createIntakeIssue
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      description: |
+        Запускает intake-пайплайн и создаёт задачу в Plane с опциональными вложениями,
+        затем (если в пайплайне есть notify-шаги) отправляет уведомления.
+
+        **Путь эндпоинта конфигурируем.** Он равен полю `endpoint` соответствующего
+        `api`-провайдера в `config.json`; таких эндпоинтов может быть несколько (по одному
+        на `api`-провайдера). `/api/plane/intake-issues` — путь по умолчанию для провайдера
+        `api:intake`. Запрос выбирает пайплайн, чей первый шаг — `from: "api:<alias>"` этого
+        провайдера.
+
+        **Тело запроса определяется конфигом.** Поля берутся из маппинга `on.content`
+        первого шага пайплайна (`api:intake → plane:*`). Воркспейс и проект НЕ передаются
+        в запросе — они заданы в `plane`-провайдере, на который ссылается шаг. Ниже описан
+        стандартный маппинг (`name` / `description` / `labels`).
+
+        **Авторизация.** Эндпоинт защищён API-ключом (env `INTAKE_API_KEY_<ALIAS>` или
+        `INTAKE_API_KEY`): заголовок `Authorization: Bearer <key>` либо `X-API-Key: <key>`.
+        Провайдер с `"auth": false` — публичный, без проверки.
+
+        **Валидация тела.** Если у `api`-провайдера задана схема `fields`
+        (`required` / `values`), тело проверяется до запуска пайплайна;
+        нарушение → `400` с перечислением ошибок.
+
+        Поддерживает два формата запроса:
+        - `application/json` — только текстовые поля (без файлов)
+        - `multipart/form-data` — текстовые поля + файлы (`attachments`, вне content-маппинга)
+
+        **Обработка файлов:**
+        - Изображения (png, jpg, gif, webp) автоматически встраиваются
+          в описание задачи и отображаются inline в Plane UI
+        - Остальные файлы загружаются как обычные attachments
+
+        Весь процесс загрузки (получение credentials, upload в хранилище,
+        подтверждение, обновление описания) выполняется на сервере —
+        клиент отправляет один запрос.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateIntakeIssueRequest"
+            examples:
+              minimal:
+                summary: Только название
+                value:
+                  name: "Новый баг"
+              with_description:
+                summary: С описанием
+                value:
+                  name: "Новый баг"
+                  description: "<p>Описание бага</p>"
+              with_labels:
+                summary: С метками
+                value:
+                  name: "Новый баг"
+                  labels:
+                    - "bug"
+                    - "urgent"
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/CreateIntakeIssueMultipart"
+      responses:
+        "201":
+          description: Задача создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateIntakeIssueResponse"
+              examples:
+                without_files:
+                  summary: Без файлов
+                  value:
+                    ok: true
+                    id: "e9a6a123-95b6-42a5-a318-a6b4e4f5f384"
+                    issue_id: "d429afed-1fc6-41a0-902e-bd32657dde60"
+                    attachments: []
+                with_files:
+                  summary: С файлами
+                  value:
+                    ok: true
+                    id: "e9a6a123-95b6-42a5-a318-a6b4e4f5f384"
+                    issue_id: "d429afed-1fc6-41a0-902e-bd32657dde60"
+                    attachments:
+                      - "1169259c-7bd5-4532-aeca-b515835043aa"
+                      - "3c4a785c-bfde-4437-b968-401059f64efb"
+        "400":
+          description: |
+            Ошибка обработки запроса. Возможные причины: не пройдена валидация `fields`
+            провайдера, пустое `name` после маппинга, проект провайдера не найден,
+            метка не найдена, нет подходящего пайплайна.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                no_name:
+                  summary: Пустое название
+                  value:
+                    ok: false
+                    error: "name is required (resolved to empty)"
+                field_validation:
+                  summary: Не пройдена валидация fields провайдера
+                  value:
+                    ok: false
+                    error: 'Field "section" is required'
+                label_not_found:
+                  summary: Метка не найдена в проекте
+                  value:
+                    ok: false
+                    error: "Labels not found: urgent"
+                no_pipeline:
+                  summary: Нет пайплайна для этого эндпоинта
+                  value:
+                    ok: false
+                    error: "No matching intake rules configured"
+        "401":
+          description: Отсутствующий или неверный API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                ok: false
+                error: "Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "INTAKE_API_KEY[_<ALIAS>] в заголовке Authorization: Bearer <key>"
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "Тот же ключ в заголовке X-API-Key"
+  schemas:
+    CreateIntakeIssueRequest:
+      description: |
+        Поля стандартного маппинга `api:intake → plane:*` (`name` / `description` / `labels`).
+        Воркспейс и проект задаются в `plane`-провайдере и в запросе не передаются.
+        Состав полей зависит от `on.content` пайплайна в config.json.
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Название задачи
+          example: "Новый баг в авторизации"
+        description:
+          type: string
+          description: Описание задачи (HTML)
+          example: "<p>При входе через OAuth возникает ошибка 500</p>"
+        labels:
+          type: array
+          items:
+            type: string
+          description: |
+            Названия меток (labels) для задачи. Метки резолвятся по имени
+            среди существующих в проекте (case-insensitive). Если метка
+            не найдена — возвращается ошибка 400.
+          example:
+            - "bug"
+            - "urgent"
+
+    CreateIntakeIssueMultipart:
+      description: |
+        То же, что CreateIntakeIssueRequest, но в формате multipart/form-data с файлами.
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Название задачи
+        description:
+          type: string
+          description: Описание задачи (HTML)
+        labels:
+          type: array
+          items:
+            type: string
+          description: |
+            Названия меток (labels) для задачи. Каждое название передаётся
+            отдельным полем формы. Резолвятся case-insensitive.
+        attachments:
+          type: array
+          items:
+            type: string
+            format: binary
+          description: |
+            Файлы вложений. Изображения (png, jpg, gif, webp) встраиваются
+            в описание, остальные файлы — как attachments.
+
+    CreateIntakeIssueResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        id:
+          type: string
+          format: uuid
+          description: ID записи в Intake
+        issue_id:
+          type: string
+          format: uuid
+          description: UUID созданной задачи (work item)
+        attachments:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Список asset_id загруженных файлов
+
+    PlaneWebhookPayload:
+      type: object
+      properties:
+        event:
+          type: string
+          description: Тип события
+        action:
+          type: string
+          enum: [created, updated, deleted]
+        webhook_id:
+          type: string
+        workspace_id:
+          type: string
+        data:
+          type: object
+          description: Данные задачи (PlaneIssue)
+        activity:
+          type: object
+          description: Информация об изменении (поле, старое/новое значение)
+          properties:
+            field:
+              type: string
+            old_value:
+              type: string
+            new_value:
+              type: string
+            verb:
+              type: string
+
+    Error:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "error description"

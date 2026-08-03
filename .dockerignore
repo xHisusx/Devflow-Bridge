@@ -1,0 +1,12 @@
+node*modules
+dist
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.idea
+.DS*Store
+*.md
+docs
+index.md

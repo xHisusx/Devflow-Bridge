@@ -1,0 +1,19 @@
+{
+  "name": "plane-pachka",
+  "version": "1.0.0",
+  "devDependencies": {
+    "bun-types": "^1.3.11"
+  },
+  "private": true,
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test --timeout 15000",
+    "test:unit": "bun test tests/unit/",
+    "test:e2e": "bun test --timeout 15000 tests/e2e/"
+  },
+  "dependencies": {
+    "elysia": "^1.4.28",
+    "taiga-api-client": "^0.2.0"
+  }
+}
