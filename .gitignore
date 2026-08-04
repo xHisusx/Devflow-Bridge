@@ -37,4 +37,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # SQLite message store
 data/
 
-config*
+# runtime config (mounted as a volume in Docker); legacy root config.json
+/config/
+/config.json
