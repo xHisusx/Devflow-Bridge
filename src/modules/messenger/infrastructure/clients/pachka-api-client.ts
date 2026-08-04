@@ -143,6 +143,18 @@ export class PachkaClient implements IMessengerClient {
     });
   }
 
+  /**
+   * Establish the DNS/TLS connection to the Pachka API ahead of time. Form opens race a 3-second
+   * trigger_id TTL — a cold first request after startup can eat half of that budget.
+   */
+  async warmup(): Promise<void> {
+    try {
+      await fetch(this.baseUrl, { method: "HEAD" });
+    } catch {
+      // Best-effort: warmup failures are irrelevant, real calls will surface real errors.
+    }
+  }
+
   async openView(
     triggerId: string,
     view: FormViewPayload,

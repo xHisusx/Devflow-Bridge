@@ -103,6 +103,13 @@ describe("resolve", () => {
   test("interpolation with missing path yields empty string", () => {
     expect(resolve("Hi {{body.missing}}x", { body: {} })).toBe("Hi x");
   });
+
+  test("checkbox flag maps to a priority via array-index conditional", () => {
+    const spec = "{{#data.checkbox_1.0=1}}Critical{{/data.checkbox_1.0}}";
+    expect(resolve(spec, { data: { checkbox_1: ["1"] } })).toBe("Critical");
+    expect(resolve(spec, { data: { checkbox_1: [] } })).toBe("");
+    expect(resolve(spec, { data: {} })).toBe("");
+  });
 });
 
 describe("mapContent", () => {

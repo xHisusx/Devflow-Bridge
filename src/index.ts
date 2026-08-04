@@ -81,6 +81,7 @@ let messageStore: MessageStore | null = null;
 if (PACHKA_API_TOKEN) {
   pachkaClient = new PachkaClient(PACHKA_API_TOKEN);
   messageStore = new MessageStore();
+  void pachkaClient.warmup();
   log.info("Pachka API client initialized");
 } else {
   log.info("PACHKA_API_TOKEN not set — API features disabled, webhook-only mode");

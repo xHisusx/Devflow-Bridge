@@ -17,6 +17,8 @@ export interface OpenFormViewInput {
   triggerId?: string;
   messageId?: number;
   chatId?: number;
+  /** How old the click event already was when the webhook reached us (delivery latency). */
+  eventAgeMs?: number;
 }
 
 /**
@@ -68,19 +70,33 @@ export class OpenFormViewUseCase {
       privateMetadata = undefined;
     }
 
+    const eventAgeMs = input.eventAgeMs != null ? Math.round(input.eventAgeMs) : undefined;
+    if (eventAgeMs != null && eventAgeMs > 2000) {
+      // The 3s trigger TTL was mostly consumed before the webhook even reached us.
+      log.warn("Form open: click event arrived stale — check webhook delivery latency", {
+        form: alias,
+        eventAgeMs,
+      });
+    }
+
     const started = performance.now();
     try {
       await this.messengerClient.openView(input.triggerId, toViewPayload(provider), {
         callbackId: formCallbackId(alias),
         privateMetadata,
       });
-      log.info("Form view opened", { form: alias, latencyMs: Math.round(performance.now() - started) });
+      log.info("Form view opened", {
+        form: alias,
+        latencyMs: Math.round(performance.now() - started),
+        ...(eventAgeMs != null ? { eventAgeMs } : {}),
+      });
       return { ok: true };
     } catch (e) {
       // Most likely trigger_expired: the 3s window closed before /views/open landed.
       log.error("Failed to open form view", {
         form: alias,
         latencyMs: Math.round(performance.now() - started),
+        ...(eventAgeMs != null ? { eventAgeMs } : {}),
         error: String(e),
       });
       return { ok: false, error: String(e) };

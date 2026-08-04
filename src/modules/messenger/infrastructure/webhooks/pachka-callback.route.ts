@@ -26,6 +26,8 @@ interface PachkaCallbackPayload {
   trigger_id?: string;
   callback_id?: string;
   private_metadata?: string;
+  /** Unix seconds of the event on Pachka's side — used to measure webhook delivery latency. */
+  webhook_timestamp?: number;
 }
 
 export function pachkaCallbackRoute(deps: PachkaCallbackRouteDeps) {
@@ -75,6 +77,9 @@ export function pachkaCallbackRoute(deps: PachkaCallbackRouteDeps) {
           triggerId: payload.trigger_id,
           messageId: payload.message_id,
           chatId: payload.chat_id,
+          eventAgeMs: payload.webhook_timestamp
+            ? Date.now() - payload.webhook_timestamp * 1000
+            : undefined,
         });
         return { ok: result.ok, ...(result.error ? { error: result.error } : {}) };
       }

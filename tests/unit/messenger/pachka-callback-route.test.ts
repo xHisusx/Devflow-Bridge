@@ -115,6 +115,23 @@ describe("POST /webhook/pachka — form open button", () => {
     expect(call).toEqual({ data: "form:support:open", triggerId: "trig-1", messageId: 100, chatId: 555 });
   });
 
+  test("passes webhook delivery age to the use case when webhook_timestamp is present", async () => {
+    const openFormView = {
+      execute: mock(() => Promise.resolve({ ok: true })),
+    } as unknown as OpenFormViewUseCase;
+    const app = createApp({ openFormView });
+
+    await post(app, {
+      data: "form:support:open",
+      trigger_id: "trig-1",
+      webhook_timestamp: Math.floor(Date.now() / 1000) - 2,
+    });
+
+    const call = (openFormView.execute as ReturnType<typeof mock>).mock.calls[0][0];
+    expect(call.eventAgeMs).toBeGreaterThanOrEqual(1000);
+    expect(call.eventAgeMs).toBeLessThan(10000);
+  });
+
   test("propagates the open error in the response", async () => {
     const openFormView = {
       execute: mock(() => Promise.resolve({ ok: false, error: "trigger_expired" })),
