@@ -107,7 +107,23 @@ export interface FormProvider {
   blocks?: FormBlock[];
 }
 
-export type Provider = PlaneProvider | PachkaProvider | WebhookProvider | ApiProvider | TaigaProvider | FormProvider;
+export type BitrixStatus = "Closed" | "Rejected";
+
+export interface BitrixProvider {
+  type: "bitrix";
+  alias: string;
+  /** Bitrix API root, without the /support/appeal/status/ path. */
+  baseUrl: string;
+}
+
+export interface BitrixContent {
+  /** Bitrix status to set. The appeal id is extracted from the Taiga description. */
+  status: BitrixStatus;
+  /** Optional resolution sent to Bitrix. */
+  resolution?: string;
+}
+
+export type Provider = PlaneProvider | PachkaProvider | WebhookProvider | ApiProvider | TaigaProvider | FormProvider | BitrixProvider;
 
 // ── Config ──
 
@@ -212,8 +228,8 @@ export function validateConfig(
       // Determine what `from` exposes to this step
       let availableFields: readonly string[] = [];
       if (i === 0) {
-        if (fromProvider && fromProvider.type !== "api" && fromProvider.type !== "plane" && fromProvider.type !== "form") {
-          log.warn(`${label}: first step must have "from" of type "api", "plane" or "form"`);
+        if (fromProvider && !["api", "plane", "form", "taiga"].includes(fromProvider.type)) {
+          log.warn(`${label}: first step must have "from" of type "api", "plane", "form" or "taiga"`);
         }
         // For the first step, `from` is the initial trigger/source. Available fields = trigger schema.
         const { type } = parseRef(rule.from);
@@ -291,6 +307,13 @@ export function validateConfig(
         const content = rule.on?.content;
         if (content && !isNotifyContent(content)) {
           log.warn(`${label}: notify content must include "message"`);
+        }
+      } else if (toProvider?.type === "bitrix") {
+        const content = rule.on?.content as Partial<BitrixContent> | undefined;
+        if (!content?.status) {
+          log.warn(`${label}: bitrix content must include "status"`);
+        } else if (!("Closed" === content.status || "Rejected" === content.status)) {
+          log.warn(`${label}: unsupported Bitrix status "${content.status}"`);
         }
       }
     }

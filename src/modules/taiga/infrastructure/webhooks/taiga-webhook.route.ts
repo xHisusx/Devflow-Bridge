@@ -32,6 +32,6 @@ export function taigaWebhookRoute(deps: TaigaWebhookRouteDeps) {
       log.debug("Taiga webhook", { action: payload.action, type: payload.type, id: payload.data?.id });
 
       const result = await useCase.execute(payload);
-      return { ok: true, updated: result.updated };
+      return { ok: true, updated: result.updated, bitrixUpdated: result.bitrixUpdated ?? 0 };
     });
 }

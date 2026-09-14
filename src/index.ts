@@ -1,5 +1,5 @@
 import type { PlaneMember } from "./modules/plane/domain/entities/member";
-import type { ApiProvider, PlaneProvider, TaigaProvider } from "./core/config";
+import type { ApiProvider, PlaneProvider, TaigaProvider, BitrixProvider } from "./core/config";
 import { PlaneClient } from "./modules/plane/infrastructure/clients/plane-api-client";
 import { TaigaApiClient } from "./modules/taiga/infrastructure/clients/taiga-api-client";
 import { PachkaClient } from "./modules/messenger/infrastructure/clients/pachka-api-client";
@@ -8,6 +8,7 @@ import { ProviderRegistry } from "./core/provider-registry";
 import { createApp } from "./app";
 import { loadConfig, validateConfig } from "./core/config";
 import { log } from "./core/logger";
+import { BitrixApiClient } from "./modules/bitrix/infrastructure/clients/bitrix-api-client";
 
 // Load config & env
 const config = await loadConfig();
@@ -54,6 +55,18 @@ for (const p of taigaProviders) {
   await client.login();
   taigaClients.set(`taiga:${p.alias}`, client);
   log.info(`Taiga client initialized for "${p.alias}"`, { baseUrl: p.baseUrl, project: p.project });
+}
+
+const bitrixProviders = registry.getByType("bitrix") as BitrixProvider[];
+const bitrixClients = new Map<string, BitrixApiClient>();
+for (const p of bitrixProviders) {
+  const suffix = p.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const token = process.env[`BITRIX_API_TOKEN_${suffix}`] ?? process.env.BITRIX_API_TOKEN;
+  if (!token) {
+    throw new Error(`No token for bitrix provider "${p.alias}": set BITRIX_API_TOKEN_${suffix} or BITRIX_API_TOKEN`);
+  }
+  bitrixClients.set(`bitrix:${p.alias}`, new BitrixApiClient(token, p.baseUrl));
+  log.info(`Bitrix client initialized for "${p.alias}"`, { baseUrl: p.baseUrl });
 }
 
 // Resolve intake API keys per api provider, same scheme as plane/taiga:
@@ -143,6 +156,7 @@ createApp({
   taigaWebhookSecret: TAIGA_WEBHOOK_SECRET,
   planeClients,
   taigaClients,
+  bitrixClients,
   intakeApiKeys,
 }).listen(port);
 

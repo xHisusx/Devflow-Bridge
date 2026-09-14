@@ -75,6 +75,7 @@ export const PROVIDER_OUTPUTS: Record<string, readonly string[]> = {
   taiga: TAIGA_STEP_OUTPUTS,
   pachka: ["messageId", "chatId", "channel", "message"],
   webhook: ["channel", "message"],
+  bitrix: ["bitrixId", "status", "resolution", "response", "provider"],
 };
 
 export function getProviderOutputs(
