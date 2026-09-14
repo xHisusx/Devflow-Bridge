@@ -1,4 +1,5 @@
 import type { StateGroup, PlaneEntity } from "../../../plane/domain/entities";
+import type { BitrixContent } from "../../../../core/config";
 
 // Content для to: "plane" — маппинг полей из request body
 export interface PlaneContent {
@@ -41,7 +42,7 @@ export interface RuleOn {
   priority?: string | string[];
 
   // ── Step payload (all sources) ──
-  content: PlaneContent | NotifyContent;
+  content: PlaneContent | NotifyContent | BitrixContent;
   outputs?: string[]; // fields this step exposes to subsequent steps (defaults to the provider schema)
 }
 

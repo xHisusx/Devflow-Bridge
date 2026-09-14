@@ -1,4 +1,4 @@
-import type { Config } from "../../../../core/config";
+import type { Config, BitrixContent } from "../../../../core/config";
 import type { ProviderRegistry } from "../../../../core/provider-registry";
 import type { PlaneStateInline } from "../../domain/entities/issue";
 import type { PlaneMember } from "../../domain/entities/member";
@@ -20,6 +20,8 @@ import { filterOutputs } from "../../../../core/pipeline";
 import { createPlaneIssueFromContent } from "../services/create-plane-issue";
 import { createTaigaIssueFromContent } from "../../../taiga/application/services/create-taiga-issue";
 import type { ITaigaApiClient } from "../../../taiga/application/ports/taiga-api.port";
+import type { IBitrixClient } from "../../../bitrix/application/ports/bitrix-api.port";
+import { updateBitrixStatusFromTaiga } from "../../../bitrix/application/services/update-bitrix-status";
 import type { Rule } from "../../../messenger/domain/entities/notification";
 import { log } from "../../../../core/logger";
 
@@ -46,6 +48,7 @@ export class ProcessPlaneWebhookUseCase {
     private memberMap: Map<string, PlaneMember>,
     private planeClients: Map<string, IPlaneApiClient> = new Map(),
     private taigaClients: Map<string, ITaigaApiClient> = new Map(),
+    private bitrixClients: Map<string, IBitrixClient> = new Map(),
   ) {
     this.deduplicator = new Deduplicator();
   }
@@ -158,6 +161,9 @@ export class ProcessPlaneWebhookUseCase {
       if (toType === "taiga") {
         return await this.executeTaigaStep(step, source);
       }
+      if (toType === "bitrix") {
+        return await this.executeBitrixStep(step, source);
+      }
 
       const content = step.on.content as NotifyContent;
       const message = renderMessage(content.message ?? DEFAULT_TEMPLATE, source);
@@ -240,6 +246,26 @@ export class ProcessPlaneWebhookUseCase {
     const mapped = mapContent(step.on.content as PlaneContent, source);
     const { outputs } = await createTaigaIssueFromContent(client, taigaProvider, mapped);
     log.debug(`-> ${step.to}: created item ${outputs.issueId}`);
+    return outputs;
+  }
+
+  private async executeBitrixStep(
+    step: Rule,
+    source: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    const provider = this.registry.getBitrix(step.to);
+    const client = this.bitrixClients.get(step.to);
+    if (!provider || !client) {
+      log.warn(`-> ${step.to}: bitrix provider or API client not configured`);
+      return null;
+    }
+    const outputs = await updateBitrixStatusFromTaiga(
+      client,
+      provider,
+      source,
+      step.on.content as BitrixContent,
+    );
+    log.debug(`-> ${step.to}: updated Bitrix appeal ${outputs.bitrixId}`);
     return outputs;
   }
 }

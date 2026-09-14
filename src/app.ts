@@ -17,6 +17,7 @@ import { ProcessTaigaWebhookUseCase } from "./modules/taiga/application/use-case
 import { taigaWebhookRoute } from "./modules/taiga/infrastructure/webhooks/taiga-webhook.route";
 import type { IPlaneApiClient } from "./modules/plane/application/ports/plane-api.port";
 import type { ITaigaApiClient } from "./modules/taiga/application/ports/taiga-api.port";
+import type { IBitrixClient } from "./modules/bitrix/application/ports/bitrix-api.port";
 import { log } from "./core/logger";
 
 export interface AppDependencies {
@@ -34,6 +35,8 @@ export interface AppDependencies {
   planeClients?: Map<string, IPlaneApiClient>;
   /** Taiga API clients keyed by provider ref ("taiga:<alias>"). */
   taigaClients?: Map<string, ITaigaApiClient>;
+  /** Bitrix API clients keyed by provider ref ("bitrix:<alias>"). */
+  bitrixClients?: Map<string, IBitrixClient>;
   /** Intake API keys keyed by provider ref ("api:<alias>"). Missing entry = endpoint without auth. */
   intakeApiKeys?: Map<string, string>;
 }
@@ -42,6 +45,7 @@ export function createApp(deps: AppDependencies) {
   const { config, registry, pachkaClient, messageStore, projectIdMap, projectIdentifierMap, memberMap, webhookSecret, taigaWebhookSecret } = deps;
   const planeClients = deps.planeClients ?? new Map<string, IPlaneApiClient>();
   const taigaClients = deps.taigaClients ?? new Map<string, ITaigaApiClient>();
+  const bitrixClients = deps.bitrixClients ?? new Map<string, IBitrixClient>();
 
   const eventBus = new EventBus();
 
@@ -55,6 +59,7 @@ export function createApp(deps: AppDependencies) {
     memberMap,
     planeClients,
     taigaClients,
+    bitrixClients,
   );
 
   const formProviders = registry.getByType("form");
@@ -68,6 +73,7 @@ export function createApp(deps: AppDependencies) {
         pachkaClient,
         messageStore,
         taigaClients,
+        bitrixClients,
       )
     : null;
 

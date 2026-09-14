@@ -1,4 +1,4 @@
-import type { Config } from "../../../../core/config";
+import type { Config, BitrixContent } from "../../../../core/config";
 import type { ProviderRegistry } from "../../../../core/provider-registry";
 import type { IPlaneApiClient } from "../ports/plane-api.port";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
@@ -13,6 +13,11 @@ import { filterOutputs } from "../../../../core/pipeline";
 import { createPlaneIssueFromContent } from "../services/create-plane-issue";
 import { createTaigaIssueFromContent } from "../../../taiga/application/services/create-taiga-issue";
 import type { ITaigaApiClient } from "../../../taiga/application/ports/taiga-api.port";
+import type { IBitrixClient } from "../../../bitrix/application/ports/bitrix-api.port";
+import {
+  BitrixMappingError,
+  updateBitrixStatusFromTaiga,
+} from "../../../bitrix/application/services/update-bitrix-status";
 import { log } from "../../../../core/logger";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
@@ -46,6 +51,7 @@ export class ProcessIntakePipelineUseCase {
     private messengerClient: IMessengerClient | null,
     private messageStore: IMessageStore | null,
     private taigaClients: Map<string, ITaigaApiClient> = new Map(),
+    private bitrixClients: Map<string, IBitrixClient> = new Map(),
   ) {}
 
   /**
@@ -122,6 +128,9 @@ export class ProcessIntakePipelineUseCase {
           notificationsSent++;
           context.set(step.to, filterOutputs(outputs, step.on.outputs));
         }
+      } else if (toType === "bitrix") {
+        const outputs = await this.executeBitrixStep(step, sourceOutputs);
+        context.set(step.to, filterOutputs(outputs, step.on.outputs));
       } else {
         log.warn(`Step "${step.to}": unsupported target type "${toType}"`);
       }
@@ -312,6 +321,42 @@ export class ProcessIntakePipelineUseCase {
       log.error(`Intake notification failed`, { target: step.to, error: String(e) });
       return null;
     }
+  }
+
+  private async executeBitrixStep(
+    step: Rule,
+    source: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const provider = this.registry.getBitrix(step.to);
+    if (!provider) throw new IntakePipelineError(`Bitrix provider "${step.to}" not found`);
+    const client = this.bitrixClients.get(step.to);
+    if (!client) throw new IntakePipelineError(`No Bitrix API client configured for "${step.to}"`);
+
+    let outputs: Record<string, unknown>;
+    try {
+      outputs = await updateBitrixStatusFromTaiga(
+        client,
+        provider,
+        source,
+        step.on.content as BitrixContent,
+      );
+    } catch (error) {
+      // Existing intake contracts allow requests without a Bitrix ID.
+      if (error instanceof BitrixMappingError) {
+        log.warn("Bitrix step skipped: BitrixID is absent from Taiga description", {
+          provider: step.to,
+          error: error.message,
+        });
+        return {};
+      }
+      throw error;
+    }
+    log.info("Bitrix appeal status updated", {
+      provider: step.to,
+      bitrixId: outputs.bitrixId,
+      status: outputs.status,
+    });
+    return outputs;
   }
 }
 
