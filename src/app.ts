@@ -102,7 +102,7 @@ export function createApp(deps: AppDependencies) {
     .get("/health", () => ({ ok: true }))
     .use(planeWebhookRoute({ useCase, eventBus, webhookSecret }))
     .use(taigaWebhookRoute({
-      useCase: new ProcessTaigaWebhookUseCase(registry, pachkaClient, messageStore, config),
+      useCase: new ProcessTaigaWebhookUseCase(registry, pachkaClient, messageStore, config, bitrixClients),
       webhookSecret: taigaWebhookSecret,
     }))
     .use(pachkaCallbackRoute({

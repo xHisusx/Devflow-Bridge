@@ -8,6 +8,7 @@ import type { IBitrixClient } from "../../src/modules/bitrix/application/ports/b
 import { ProcessIntakePipelineUseCase } from "../../src/modules/plane/application/use-cases/process-intake-pipeline";
 import { ProviderRegistry } from "../../src/core/provider-registry";
 import type { Config, Provider } from "../../src/core/config";
+import { ProcessTaigaWebhookUseCase } from "../../src/modules/taiga/application/use-cases/process-taiga-webhook";
 
 function client(): IBitrixClient {
   return {
@@ -96,5 +97,83 @@ describe("Bitrix status integration", () => {
 
     expect(result.ok).toBe(true);
     expect(bitrix.updateStatus).toHaveBeenCalledWith({ id: 456, status: "Closed", resolution: "Готово" });
+  });
+
+  test("executes the Taiga to Bitrix pipeline on Closed/Rejected status webhook", async () => {
+    const bitrix = client();
+    const providers: Provider[] = [
+      { type: "taiga", alias: "support", baseUrl: "http://taiga.test", project: "support" },
+      { type: "bitrix", alias: "support", baseUrl: "http://bitrix.test/api" },
+    ];
+    const config: Config = {
+      providers,
+      rules: [
+        [{
+          from: "taiga:support",
+          to: "bitrix:support",
+          on: {
+            action: "update",
+            status: "Closed",
+            content: { status: "Closed", resolution: "Закрыто в Taiga" },
+          },
+        }],
+        [{
+          from: "taiga:support",
+          to: "bitrix:support",
+          on: {
+            action: "update",
+            status: "Rejected",
+            content: { status: "Rejected", resolution: "Отклонено в Taiga" },
+          },
+        }],
+      ],
+    };
+    const useCase = new ProcessTaigaWebhookUseCase(
+      new ProviderRegistry(providers),
+      null,
+      null,
+      config,
+      new Map([["bitrix:support", bitrix]]),
+    );
+
+    const result = await useCase.execute({
+      action: "change",
+      type: "issue",
+      data: {
+        id: 7,
+        ref: 12,
+        subject: "Request",
+        description: "**BitrixID:** 654",
+        project: { permalink: "http://taiga.test/project/support", name: "Support" },
+        status: { name: "Closed" },
+      },
+      change: { diff: { status: { from: "In progress", to: "Closed" } } },
+    });
+
+    expect(result.bitrixUpdated).toBe(1);
+    expect(bitrix.updateStatus).toHaveBeenCalledWith({
+      id: 654,
+      status: "Closed",
+      resolution: "Закрыто в Taiga",
+    });
+
+    await useCase.execute({
+      action: "change",
+      type: "issue",
+      data: {
+        id: 7,
+        ref: 12,
+        subject: "Request",
+        description: "**BitrixID:** 654",
+        project: { permalink: "http://taiga.test/project/support", name: "Support" },
+        status: { name: "Rejected" },
+      },
+      change: { diff: { status: { from: "In progress", to: "Rejected" } } },
+    });
+    expect(bitrix.updateStatus).toHaveBeenCalledWith({
+      id: 654,
+      status: "Rejected",
+      resolution: "Отклонено в Taiga",
+    });
   });
 });

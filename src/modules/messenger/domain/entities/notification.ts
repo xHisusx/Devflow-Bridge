@@ -40,6 +40,8 @@ export interface RuleOn {
   state?: string | string[];
   stateGroup?: StateGroup | StateGroup[];
   priority?: string | string[];
+  /** Taiga webhook status condition (used with `from: taiga:*`). */
+  status?: string | string[];
 
   // ── Step payload (all sources) ──
   content: PlaneContent | NotifyContent | BitrixContent;

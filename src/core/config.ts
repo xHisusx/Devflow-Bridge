@@ -228,8 +228,8 @@ export function validateConfig(
       // Determine what `from` exposes to this step
       let availableFields: readonly string[] = [];
       if (i === 0) {
-        if (fromProvider && fromProvider.type !== "api" && fromProvider.type !== "plane" && fromProvider.type !== "form") {
-          log.warn(`${label}: first step must have "from" of type "api", "plane" or "form"`);
+        if (fromProvider && !["api", "plane", "form", "taiga"].includes(fromProvider.type)) {
+          log.warn(`${label}: first step must have "from" of type "api", "plane", "form" or "taiga"`);
         }
         // For the first step, `from` is the initial trigger/source. Available fields = trigger schema.
         const { type } = parseRef(rule.from);

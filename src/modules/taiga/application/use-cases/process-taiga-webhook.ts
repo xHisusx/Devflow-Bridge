@@ -1,11 +1,15 @@
 import type { ProviderRegistry } from "../../../../core/provider-registry";
-import type { Config, TaigaProvider, PachkaProvider } from "../../../../core/config";
+import type { Config, TaigaProvider, PachkaProvider, BitrixContent } from "../../../../core/config";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
 import type { IMessageStore } from "../../../messenger/application/ports/message-store.port";
 import { buildFeedbackButtons, statusLabel, buildItemUrl } from "../../domain/services/feedback-buttons";
 import { findNotifyTemplate } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
 import { log } from "../../../../core/logger";
+import type { IBitrixClient } from "../../../bitrix/application/ports/bitrix-api.port";
+import { BitrixMappingError, updateBitrixStatusFromTaiga } from "../../../bitrix/application/services/update-bitrix-status";
+import { parseRef, type Rule } from "../../../messenger/domain/entities/notification";
+import { filterOutputs } from "../../../../core/pipeline";
 
 /** Relevant subset of Taiga's webhook payload (nested objects come pre-serialized). */
 export interface TaigaWebhookPayload {
@@ -19,6 +23,7 @@ export interface TaigaWebhookPayload {
     status?: { name?: string };
     assigned_to?: { full_name_display?: string; full_name?: string } | null;
     type?: { name?: string } | null;
+    description?: string;
   };
   change?: { diff?: Record<string, unknown> };
 }
@@ -26,6 +31,7 @@ export interface TaigaWebhookPayload {
 export interface TaigaWebhookResult {
   ok: boolean;
   updated: number;
+  bitrixUpdated?: number;
 }
 
 /**
@@ -39,12 +45,13 @@ export class ProcessTaigaWebhookUseCase {
     private messengerClient: IMessengerClient | null,
     private messageStore: IMessageStore | null,
     private config: Config | null = null,
+    private bitrixClients: Map<string, IBitrixClient> = new Map(),
   ) {}
 
   async execute(payload: TaigaWebhookPayload): Promise<TaigaWebhookResult> {
     if (payload.action === "test") {
       log.info("Taiga webhook test received");
-      return { ok: true, updated: 0 };
+      return { ok: true, updated: 0, bitrixUpdated: 0 };
     }
 
     const diff = payload.change?.diff ?? {};
@@ -52,13 +59,16 @@ export class ProcessTaigaWebhookUseCase {
     const itemId = payload.data?.id;
     const statusName = payload.data?.status?.name;
     if (payload.action !== "change" || !relevantChange || !itemId || !statusName) {
-      return { ok: true, updated: 0 };
-    }
-    if (!this.messengerClient || !this.messageStore) {
-      return { ok: true, updated: 0 };
+      return { ok: true, updated: 0, bitrixUpdated: 0 };
     }
 
     const slug = extractProjectSlug(payload.data?.project?.permalink);
+    const bitrixUpdated = "status" in diff
+      ? await this.processBitrixRules(payload, slug)
+      : 0;
+    if (!this.messengerClient || !this.messageStore) {
+      return { ok: true, updated: 0, bitrixUpdated };
+    }
     let updated = 0;
 
     for (const provider of this.registry.getByType("taiga") as TaigaProvider[]) {
@@ -92,7 +102,70 @@ export class ProcessTaigaWebhookUseCase {
       }
     }
 
-    return { ok: true, updated };
+    return { ok: true, updated, bitrixUpdated };
+  }
+
+  /** Execute standalone Taiga webhook pipelines such as taiga -> bitrix. */
+  private async processBitrixRules(payload: TaigaWebhookPayload, slug: string | null): Promise<number> {
+    if (!this.config || this.bitrixClients.size === 0) return 0;
+
+    const itemId = payload.data?.id;
+    const statusName = payload.data?.status?.name;
+    if (!itemId || !statusName) return 0;
+
+    const action = payload.action === "change" ? "update" : payload.action;
+    let updated = 0;
+
+    for (const pipeline of this.config.rules) {
+      const trigger = pipeline[0];
+      if (!trigger || parseRef(trigger.from).type !== "taiga") continue;
+      const taigaProvider = this.registry.getTaiga(trigger.from);
+      if (!taigaProvider || (slug && taigaProvider.project !== slug)) continue;
+      if (!matchesTaigaCondition(trigger, action, statusName)) continue;
+
+      const source = this.buildVars(taigaProvider, payload, itemId, statusName);
+      const context = new Map<string, Record<string, unknown>>([[trigger.from, source]]);
+      for (const step of pipeline) {
+        const stepSource = context.get(step.from);
+        if (!stepSource) break;
+        if (parseRef(step.to).type !== "bitrix") continue;
+
+        const provider = this.registry.getBitrix(step.to);
+        const client = this.bitrixClients.get(step.to);
+        if (!provider || !client) {
+          log.warn("Taiga -> Bitrix: provider or client is not configured", { target: step.to });
+          continue;
+        }
+
+        try {
+          const outputs = await updateBitrixStatusFromTaiga(
+            client,
+            provider,
+            stepSource,
+            step.on.content as BitrixContent,
+          );
+          context.set(step.to, filterOutputs(outputs, step.on.outputs));
+          updated++;
+          log.info("Taiga webhook -> Bitrix completed", {
+            itemId,
+            bitrixId: outputs.bitrixId,
+            status: outputs.status,
+            target: step.to,
+          });
+        } catch (error) {
+          if (error instanceof BitrixMappingError) {
+            log.warn("Taiga webhook -> Bitrix skipped: BitrixID is absent from description", {
+              itemId,
+              target: step.to,
+              error: error.message,
+            });
+          } else {
+            log.error("Taiga webhook -> Bitrix failed", { itemId, target: step.to, error: String(error) });
+          }
+        }
+      }
+    }
+    return updated;
   }
 
   /** Template vars from the webhook payload itself (no API calls needed). */
@@ -115,8 +188,16 @@ export class ProcessTaigaWebhookUseCase {
       status: statusLabel(provider.feedback?.statusLabels, statusName),
       assignee: data.assigned_to?.full_name_display ?? data.assigned_to?.full_name ?? "—",
       type: data.type?.name ?? "—",
+      description: data.description ?? "",
     };
   }
+}
+
+function matchesTaigaCondition(rule: Rule, action: string, status: string): boolean {
+  if (rule.on.action && rule.on.action !== action) return false;
+  if (!rule.on.status) return true;
+  const values = Array.isArray(rule.on.status) ? rule.on.status : [rule.on.status];
+  return values.some((value) => value.toLowerCase() === status.toLowerCase());
 }
 
 /** "https://taiga.example.com/project/my-slug" -> "my-slug". */
