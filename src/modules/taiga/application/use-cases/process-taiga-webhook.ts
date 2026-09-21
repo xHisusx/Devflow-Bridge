@@ -55,15 +55,18 @@ export class ProcessTaigaWebhookUseCase {
     }
 
     const diff = payload.change?.diff ?? {};
-    const relevantChange = "status" in diff || "assigned_to" in diff;
+    // Taiga emits a dedicated `close` action for closing an item; unlike `change`,
+    // it may not include change.diff, so treat it as a status change itself.
+    const isCloseAction = payload.action === "close";
+    const relevantChange = isCloseAction || "status" in diff || "assigned_to" in diff;
     const itemId = payload.data?.id;
     const statusName = payload.data?.status?.name;
-    if (payload.action !== "change" || !relevantChange || !itemId || !statusName) {
+    if (!(payload.action === "change" || isCloseAction) || !relevantChange || !itemId || !statusName) {
       return { ok: true, updated: 0, bitrixUpdated: 0 };
     }
 
     const slug = extractProjectSlug(payload.data?.project?.permalink);
-    const bitrixUpdated = "status" in diff
+    const bitrixUpdated = (isCloseAction || "status" in diff)
       ? await this.processBitrixRules(payload, slug)
       : 0;
     if (!this.messengerClient || !this.messageStore) {
@@ -113,7 +116,7 @@ export class ProcessTaigaWebhookUseCase {
     const statusName = payload.data?.status?.name;
     if (!itemId || !statusName) return 0;
 
-    const action = payload.action === "change" ? "update" : payload.action;
+    const action = payload.action === "close" ? "close" : "update";
     let updated = 0;
 
     for (const pipeline of this.config.rules) {
