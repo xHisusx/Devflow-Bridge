@@ -35,7 +35,7 @@ export interface RuleOn {
   // ── Match conditions (Plane-trigger only) ──
   // Evaluated by rule-matcher only when the pipeline source is a Plane webhook event (first step).
   // Ignored for api:intake-sourced pipelines and for non-first steps.
-  action?: "create" | "update" | "delete";
+  action?: "create" | "update" | "change" | "delete";
   entity?: PlaneEntity | PlaneEntity[];
   state?: string | string[];
   stateGroup?: StateGroup | StateGroup[];

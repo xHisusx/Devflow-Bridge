@@ -38,6 +38,7 @@ export interface TaigaStatusInfo {
 }
 
 export interface TaigaItemInfo {
+  description?: string;
   id: number;
   ref: number;
   subject: string;
