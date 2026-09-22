@@ -48,6 +48,7 @@ export function createApp(deps: AppDependencies) {
   const bitrixClients = deps.bitrixClients ?? new Map<string, IBitrixClient>();
 
   const eventBus = new EventBus();
+  const taigaTransitions = new ProcessTaigaWebhookUseCase(registry, pachkaClient, messageStore, config, bitrixClients);
 
   const useCase = new ProcessPlaneWebhookUseCase(
     config,
@@ -102,7 +103,7 @@ export function createApp(deps: AppDependencies) {
     .get("/health", () => ({ ok: true }))
     .use(planeWebhookRoute({ useCase, eventBus, webhookSecret }))
     .use(taigaWebhookRoute({
-      useCase: new ProcessTaigaWebhookUseCase(registry, pachkaClient, messageStore, config, bitrixClients),
+      useCase: taigaTransitions,
       webhookSecret: taigaWebhookSecret,
     }))
     .use(pachkaCallbackRoute({

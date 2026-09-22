@@ -40,6 +40,8 @@ export interface TaigaWebhookResult {
  * swap its buttons to the set configured for the current status.
  */
 export class ProcessTaigaWebhookUseCase {
+  // Deduplicate webhook retries within this process. Failed writes are retryable.
+  private deliveries = new Map<string, { status: string; expires: number; pending: boolean }>();
   constructor(
     private registry: ProviderRegistry,
     private messengerClient: IMessengerClient | null,
@@ -55,18 +57,21 @@ export class ProcessTaigaWebhookUseCase {
     }
 
     const diff = payload.change?.diff ?? {};
-    // Taiga emits a dedicated `close` action for closing an item; unlike `change`,
-    // it may not include change.diff, so treat it as a status change itself.
-    const isCloseAction = payload.action === "close";
-    const relevantChange = isCloseAction || "status" in diff || "assigned_to" in diff;
+    const relevantChange = "status" in diff || "assigned_to" in diff;
     const itemId = payload.data?.id;
-    const statusName = payload.data?.status?.name;
-    if (!(payload.action === "change" || isCloseAction) || !relevantChange || !itemId || !statusName) {
+    const statusName = getWebhookStatus(payload);
+    if (payload.action !== "change" || !relevantChange || !itemId || !statusName) {
+      log.debug("Taiga webhook ignored", {
+        action: payload.action,
+        itemId,
+        status: statusName,
+        hasRelevantDiff: relevantChange,
+      });
       return { ok: true, updated: 0, bitrixUpdated: 0 };
     }
 
     const slug = extractProjectSlug(payload.data?.project?.permalink);
-    const bitrixUpdated = (isCloseAction || "status" in diff)
+    const bitrixUpdated = "status" in diff
       ? await this.processBitrixRules(payload, slug)
       : 0;
     if (!this.messengerClient || !this.messageStore) {
@@ -110,21 +115,75 @@ export class ProcessTaigaWebhookUseCase {
 
   /** Execute standalone Taiga webhook pipelines such as taiga -> bitrix. */
   private async processBitrixRules(payload: TaigaWebhookPayload, slug: string | null): Promise<number> {
-    if (!this.config || this.bitrixClients.size === 0) return 0;
+    if (!this.config) {
+      log.warn("Taiga -> Bitrix skipped: config is not available");
+      return 0;
+    }
+    if (this.bitrixClients.size === 0) {
+      log.warn("Taiga -> Bitrix skipped: no Bitrix clients are configured");
+      return 0;
+    }
 
     const itemId = payload.data?.id;
-    const statusName = payload.data?.status?.name;
-    if (!itemId || !statusName) return 0;
+    const statusName = getWebhookStatus(payload);
+    if (!itemId || !statusName) {
+      log.warn("Taiga -> Bitrix skipped: webhook has no item id or status", { itemId, status: statusName });
+      return 0;
+    }
 
-    const action = payload.action === "close" ? "close" : "update";
+    const action = payload.action;
+    log.info("Taiga -> Bitrix processing", {
+      action,
+      itemId,
+      status: statusName,
+      project: slug,
+      rules: this.config.rules.length,
+      clients: this.bitrixClients.size,
+    });
     let updated = 0;
 
     for (const pipeline of this.config.rules) {
       const trigger = pipeline[0];
-      if (!trigger || parseRef(trigger.from).type !== "taiga") continue;
+      if (!trigger || parseRef(trigger.from).type !== "taiga") {
+        continue;
+      }
       const taigaProvider = this.registry.getTaiga(trigger.from);
-      if (!taigaProvider || (slug && taigaProvider.project !== slug)) continue;
-      if (!matchesTaigaCondition(trigger, action, statusName)) continue;
+      if (!taigaProvider) {
+        log.warn("Taiga -> Bitrix rule skipped: Taiga provider is not configured", { from: trigger.from });
+        continue;
+      }
+      if (slug && taigaProvider.project !== slug) {
+        log.debug("Taiga -> Bitrix rule skipped: project mismatch", {
+          from: trigger.from,
+          configuredProject: taigaProvider.project,
+          webhookProject: slug,
+        });
+        continue;
+      }
+      const deliveryPrefix = JSON.stringify([trigger.from, payload.type, itemId]);
+      for (const [key, delivery] of this.deliveries) {
+        if (!delivery.pending && (delivery.expires <= Date.now() ||
+          (key.startsWith(deliveryPrefix + ":") && delivery.status !== statusName))) this.deliveries.delete(key);
+      }
+      if (!matchesTaigaCondition(trigger, action, statusName)) {
+        log.debug("Taiga -> Bitrix rule skipped: condition mismatch", {
+          from: trigger.from,
+          target: trigger.to,
+          configuredAction: trigger.on.action,
+          actualAction: action,
+          configuredStatus: trigger.on.status,
+          actualStatus: statusName,
+        });
+        continue;
+      }
+
+      log.info("Taiga -> Bitrix rule matched", {
+        from: trigger.from,
+        target: trigger.to,
+        itemId,
+        action,
+        status: statusName,
+      });
 
       const source = this.buildVars(taigaProvider, payload, itemId, statusName);
       const context = new Map<string, Record<string, unknown>>([[trigger.from, source]]);
@@ -140,6 +199,13 @@ export class ProcessTaigaWebhookUseCase {
           continue;
         }
 
+        const deliveryKey = deliveryPrefix + ":" + JSON.stringify(step);
+        if (this.deliveries.has(deliveryKey)) {
+          log.info("Taiga -> Bitrix duplicate skipped", { itemId, target: step.to, status: statusName });
+          continue;
+        }
+        const delivery = { status: statusName, expires: Date.now() + 60_000, pending: true };
+        this.deliveries.set(deliveryKey, delivery);
         try {
           const outputs = await updateBitrixStatusFromTaiga(
             client,
@@ -148,6 +214,8 @@ export class ProcessTaigaWebhookUseCase {
             step.on.content as BitrixContent,
           );
           context.set(step.to, filterOutputs(outputs, step.on.outputs));
+          delivery.pending = false;
+          delivery.expires = Date.now() + 60_000;
           updated++;
           log.info("Taiga webhook -> Bitrix completed", {
             itemId,
@@ -156,6 +224,7 @@ export class ProcessTaigaWebhookUseCase {
             target: step.to,
           });
         } catch (error) {
+          this.deliveries.delete(deliveryKey);
           if (error instanceof BitrixMappingError) {
             log.warn("Taiga webhook -> Bitrix skipped: BitrixID is absent from description", {
               itemId,
@@ -167,6 +236,9 @@ export class ProcessTaigaWebhookUseCase {
           }
         }
       }
+    }
+    if (updated === 0) {
+      log.warn("Taiga -> Bitrix: no rule was executed", { itemId, action, status: statusName, project: slug });
     }
     return updated;
   }
@@ -194,6 +266,22 @@ export class ProcessTaigaWebhookUseCase {
       description: data.description ?? "",
     };
   }
+}
+
+function getWebhookStatus(payload: TaigaWebhookPayload): string | undefined {
+  const directStatus = payload.data?.status?.name;
+  if (directStatus) return directStatus;
+
+  const statusDiff = payload.change?.diff?.status;
+  if (!statusDiff || typeof statusDiff !== "object") return undefined;
+  const nextStatus = (statusDiff as { to?: unknown; name?: unknown }).to
+    ?? (statusDiff as { to?: { name?: unknown }; name?: unknown }).name;
+  if (typeof nextStatus === "string") return nextStatus;
+  if (nextStatus && typeof nextStatus === "object" && "name" in nextStatus) {
+    const name = (nextStatus as { name?: unknown }).name;
+    return typeof name === "string" ? name : undefined;
+  }
+  return undefined;
 }
 
 function matchesTaigaCondition(rule: Rule, action: string, status: string): boolean {

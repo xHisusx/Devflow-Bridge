@@ -99,6 +99,7 @@ export class TaigaApiClient implements ITaigaApiClient {
       ref: item.ref,
       subject: item.subject,
       version: item.version,
+      description: item.description ?? "",
       status: item.status,
       statusName: raw.status_extra_info?.name ?? null,
       assigneeName:

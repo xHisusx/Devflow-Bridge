@@ -9,6 +9,8 @@ import { ProcessIntakePipelineUseCase } from "../../src/modules/plane/applicatio
 import { ProviderRegistry } from "../../src/core/provider-registry";
 import type { Config, Provider } from "../../src/core/config";
 import { ProcessTaigaWebhookUseCase } from "../../src/modules/taiga/application/use-cases/process-taiga-webhook";
+import { HandleTaigaFeedbackUseCase } from "../../src/modules/taiga/application/use-cases/handle-taiga-feedback";
+import type { ITaigaApiClient } from "../../src/modules/taiga/application/ports/taiga-api.port";
 
 function client(): IBitrixClient {
   return {
@@ -17,6 +19,50 @@ function client(): IBitrixClient {
 }
 
 describe("Bitrix status integration", () => {
+  test("callback waits for change webhook; repeated webhook is deduplicated", async () => {
+    const bitrix = client();
+    const providers: Provider[] = [
+      { type: "taiga", alias: "support", baseUrl: "http://taiga.test", project: "support",
+        feedback: { statuses: { close: "Closed" } } },
+      { type: "bitrix", alias: "support", baseUrl: "http://bitrix.test/api" },
+    ];
+    const config: Config = { providers, rules: [[{
+      from: "taiga:support", to: "bitrix:support",
+      on: { action: "change", status: "Closed", content: { status: "Closed" } },
+    }]] };
+    const registry = new ProviderRegistry(providers);
+    const transitions = new ProcessTaigaWebhookUseCase(registry, null, null, config,
+      new Map([["bitrix:support", bitrix]]));
+    const taiga: ITaigaApiClient = {
+      getProjectBySlug: mock(async () => ({ id: 1, slug: "support", name: "Support" })),
+      getItemStatuses: mock(async () => [{ id: 2, name: "Closed" }]),
+      getItem: mock(async () => ({ id: 7, ref: 12, subject: "Request", description: "BitrixID: 654",
+        version: 1, status: 1, statusName: "New", assigneeName: null, typeId: null, priorityId: null })),
+      updateItem: mock(async () => {}),
+      createItem: mock(), getIssueTypes: mock(), getPriorities: mock(), getMemberIdByEmail: mock(),
+    };
+    const feedback = new HandleTaigaFeedbackUseCase(registry, new Map([["taiga:support", taiga]]),
+      null, config, null);
+    expect((await feedback.execute({ data: "taiga:support:close:7" })).ok).toBe(true);
+    expect(bitrix.updateStatus).not.toHaveBeenCalled();
+    const webhook = {
+      action: "change", type: "issue",
+      data: { id: 7, description: "BitrixID: 654", status: { name: "Closed" },
+        project: { permalink: "http://taiga.test/project/support" } },
+      change: { diff: { status: { from: "New", to: "Closed" } } },
+    };
+    await transitions.execute(webhook);
+    expect(bitrix.updateStatus).toHaveBeenCalledTimes(1);
+    await transitions.execute(webhook);
+    expect(bitrix.updateStatus).toHaveBeenCalledTimes(1);
+    // A different item's manual status change must also match the close rule.
+    await transitions.execute({ ...webhook, data: { ...webhook.data, id: 8 } });
+    expect(bitrix.updateStatus).toHaveBeenCalledTimes(2);
+    // Reopening allows a later close to be delivered again.
+    await transitions.execute({ ...webhook, data: { ...webhook.data, status: { name: "New" } } });
+    await transitions.execute(webhook);
+    expect(bitrix.updateStatus).toHaveBeenCalledTimes(3);
+  });
   test.each([
     "**BitrixID:** 12345",
     "BitrixID: 12345",
@@ -112,7 +158,7 @@ describe("Bitrix status integration", () => {
           from: "taiga:support",
           to: "bitrix:support",
           on: {
-            action: "update",
+            action: "change",
             status: "Closed",
             content: { status: "Closed", resolution: "Закрыто в Taiga" },
           },
@@ -121,7 +167,7 @@ describe("Bitrix status integration", () => {
           from: "taiga:support",
           to: "bitrix:support",
           on: {
-            action: "update",
+            action: "change",
             status: "Rejected",
             content: { status: "Rejected", resolution: "Отклонено в Taiga" },
           },
@@ -175,5 +221,48 @@ describe("Bitrix status integration", () => {
       status: "Rejected",
       resolution: "Отклонено в Taiga",
     });
+  });
+
+  test("ignores close callback action as a webhook", async () => {
+    const bitrix = client();
+    const providers: Provider[] = [
+      { type: "taiga", alias: "support", baseUrl: "http://taiga.test", project: "support" },
+      { type: "bitrix", alias: "support", baseUrl: "http://bitrix.test/api" },
+    ];
+    const config: Config = {
+      providers,
+      rules: [[{
+        from: "taiga:support",
+        to: "bitrix:support",
+        on: {
+          action: "change",
+          status: "Closed",
+          content: { status: "Closed", resolution: "Закрыто в Taiga" },
+        },
+      }]],
+    };
+    const useCase = new ProcessTaigaWebhookUseCase(
+      new ProviderRegistry(providers),
+      null,
+      null,
+      config,
+      new Map([["bitrix:support", bitrix]]),
+    );
+
+    const result = await useCase.execute({
+      action: "close",
+      type: "issue",
+      data: {
+        id: 8,
+        ref: 13,
+        subject: "Request",
+        description: "**BitrixID:** 765",
+        project: { permalink: "http://taiga.test/project/support", name: "Support" },
+        status: { name: "Closed" },
+      },
+    });
+
+    expect(result.bitrixUpdated).toBe(0);
+    expect(bitrix.updateStatus).not.toHaveBeenCalled();
   });
 });

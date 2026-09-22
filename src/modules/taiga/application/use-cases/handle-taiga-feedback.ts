@@ -97,6 +97,7 @@ export class HandleTaigaFeedbackUseCase {
 
     await this.refreshMessage(input, provider, client, project, itemId, feedback.buttons?.[statusName] ?? []);
 
+
     return { ok: true, status: statusName };
   }
 
