@@ -9,10 +9,18 @@ import { mapContent } from "../../domain/services/content-mapper";
 import { extractButtons } from "../../../messenger/domain/services/action-executor";
 import { executeActions } from "../../../messenger/application/use-cases/execute-actions";
 import { sendPachkaMessage } from "../../../messenger/infrastructure/clients/pachka-webhook-sender";
-import { filterOutputs } from "../../../../core/pipeline";
+import { filterOutputs, onceKey } from "../../../../core/pipeline";
+import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
 import { createPlaneIssueFromContent } from "../services/create-plane-issue";
 import { createTaigaIssueFromContent } from "../../../taiga/application/services/create-taiga-issue";
+import { updateTaigaItemFromContent } from "../../../taiga/application/services/update-taiga-item";
 import type { ITaigaApiClient } from "../../../taiga/application/ports/taiga-api.port";
+import type { IGitLabApiClient } from "../../../gitlab/application/ports/gitlab-api.port";
+import { runGitLabStep } from "../../../gitlab/application/services/run-gitlab-step";
+import { rememberTaskLink } from "../../../gitlab/application/services/task-links";
+import type { GitLabContent } from "../../../messenger/domain/entities/notification";
+import type { PachkaUserDirectory } from "../../../messenger/application/services/pachka-user-directory";
+import { resolvePachkaTarget } from "../../../messenger/application/services/resolve-pachka-target";
 import { log } from "../../../../core/logger";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
@@ -46,6 +54,9 @@ export class ProcessIntakePipelineUseCase {
     private messengerClient: IMessengerClient | null,
     private messageStore: IMessageStore | null,
     private taigaClients: Map<string, ITaigaApiClient> = new Map(),
+    private gitlabClients: Map<string, IGitLabApiClient> = new Map(),
+    private userDirectory: PachkaUserDirectory | null = null,
+    private pipelineState: IPipelineStateStore | null = null,
   ) {}
 
   /**
@@ -90,45 +101,87 @@ export class ProcessIntakePipelineUseCase {
     let result: { id: string; issue_id: string; sequence_id: number } | null = null;
     const attachments: string[] = [];
     let notificationsSent = 0;
+    // Repository work is a completed step on its own, even in a pipeline that writes no tracker item.
+    let repoStepsDone = 0;
+    // Refs of steps that did not run, so the steps reading from them are skipped as well.
+    const skipped = new Set<string>();
 
     for (const step of pipeline) {
       const sourceOutputs = context.get(step.from);
       if (!sourceOutputs) {
+        if (skipped.has(step.from)) {
+          skipped.add(step.to);
+          continue;
+        }
         throw new IntakePipelineError(
           `Step "${step.to}": source "${step.from}" has no outputs in context`,
         );
       }
 
+      const guard = this.claimOnce(step, sourceOutputs);
+      if (guard === "skip") {
+        skipped.add(step.to);
+        continue;
+      }
+
       const { type: toType } = parseRef(step.to);
 
-      if (toType === "plane") {
-        const stepResult = await this.executePlaneStep(step, sourceOutputs, files);
-        result = stepResult.result;
-        attachments.push(...stepResult.attachments);
-        context.set(step.to, filterOutputs(stepResult.outputs, step.on.outputs));
-      } else if (toType === "taiga") {
-        const stepResult = await this.executeTaigaStep(step, sourceOutputs, files);
-        result = stepResult.result;
-        context.set(step.to, filterOutputs(stepResult.outputs, step.on.outputs));
-      } else if (toType === "pachka") {
-        const outputs = await this.executePachkaStep(step, sourceOutputs);
-        if (outputs) {
-          notificationsSent++;
+      try {
+        if (toType === "plane") {
+          const stepResult = await this.executePlaneStep(step, sourceOutputs, files);
+          result = stepResult.result;
+          attachments.push(...stepResult.attachments);
+          context.set(step.to, filterOutputs(stepResult.outputs, step.on.outputs));
+        } else if (toType === "taiga") {
+          const stepResult = await this.executeTaigaStep(step, sourceOutputs, files);
+          if (!stepResult) {
+            this.releaseOnce(guard);
+            skipped.add(step.to);
+            continue;
+          }
+          result = stepResult.result;
+          context.set(step.to, filterOutputs(stepResult.outputs, step.on.outputs));
+        } else if (toType === "gitlab") {
+          const outputs = await this.executeGitlabStep(step, sourceOutputs);
+          repoStepsDone++;
+          // Remember what the branch and MR are for, so a GitLab webhook can find the item again.
+          rememberTaskLink(this.pipelineState, step.from, outputs);
           context.set(step.to, filterOutputs(outputs, step.on.outputs));
+        } else if (toType === "pachka") {
+          const outputs = await this.executePachkaStep(step, sourceOutputs);
+          if (outputs) {
+            notificationsSent++;
+            context.set(step.to, filterOutputs(outputs, step.on.outputs));
+          } else {
+            this.releaseOnce(guard);
+            skipped.add(step.to);
+          }
+        } else if (toType === "webhook") {
+          const outputs = await this.executeWebhookStep(step, sourceOutputs);
+          if (outputs) {
+            notificationsSent++;
+            context.set(step.to, filterOutputs(outputs, step.on.outputs));
+          } else {
+            this.releaseOnce(guard);
+            skipped.add(step.to);
+          }
+        } else {
+          this.releaseOnce(guard);
+          log.warn(`Step "${step.to}": unsupported target type "${toType}"`);
         }
-      } else if (toType === "webhook") {
-        const outputs = await this.executeWebhookStep(step, sourceOutputs);
-        if (outputs) {
-          notificationsSent++;
-          context.set(step.to, filterOutputs(outputs, step.on.outputs));
-        }
-      } else {
-        log.warn(`Step "${step.to}": unsupported target type "${toType}"`);
+      } catch (e) {
+        // A guard must not outlive a failed step, or the retry would be skipped silently.
+        this.releaseOnce(guard);
+        throw e;
       }
     }
 
     if (!result) {
-      return { ok: false, attachments: [], notifications_sent: 0 };
+      const ok = repoStepsDone > 0 || notificationsSent > 0;
+      if (ok) {
+        log.info("Pipeline completed", { repoSteps: repoStepsDone, notifications: notificationsSent });
+      }
+      return { ok, attachments: [], notifications_sent: notificationsSent };
     }
 
     log.info("Intake pipeline completed", {
@@ -144,6 +197,32 @@ export class ProcessIntakePipelineUseCase {
       attachments,
       notifications_sent: notificationsSent,
     };
+  }
+
+  /**
+   * Claim the `once` key of a step before running it: null when the step has no guard, the
+   * claimed key on a first run, "skip" when it ran before. Claiming up front (rather than
+   * marking afterwards) keeps two concurrent webhooks from both passing the guard.
+   */
+  private claimOnce(step: Rule, source: Record<string, unknown>): string | null | "skip" {
+    const key = onceKey(step, source);
+    if (!key) return null;
+
+    if (!this.pipelineState) {
+      log.warn(
+        `Step "${step.from} -> ${step.to}" declares "once" but no state store is available, running it`,
+      );
+      return null;
+    }
+    if (!this.pipelineState.markOnce(key)) {
+      log.info(`Step "${step.from} -> ${step.to}" already ran once, skipped`, { key });
+      return "skip";
+    }
+    return key;
+  }
+
+  private releaseOnce(guard: string | null | "skip"): void {
+    if (guard && guard !== "skip") this.pipelineState?.forget(guard);
   }
 
   private async executePlaneStep(
@@ -220,7 +299,11 @@ export class ProcessIntakePipelineUseCase {
     return { result, attachments, outputs };
   }
 
-  /** Create a Taiga item (issue / user story / task). Attachments are not supported by Taiga yet. */
+  /**
+   * Create a Taiga item (issue / user story / task), or update one when the content declares
+   * `item`. Returns null when an update has nothing to act on (its `item` resolved to empty).
+   * Attachments are not supported by Taiga yet.
+   */
   private async executeTaigaStep(
     step: Rule,
     source: Record<string, unknown>,
@@ -228,7 +311,7 @@ export class ProcessIntakePipelineUseCase {
   ): Promise<{
     result: { id: string; issue_id: string; sequence_id: number };
     outputs: Record<string, unknown>;
-  }> {
+  } | null> {
     const taigaProvider = this.registry.getTaiga(step.to);
     if (!taigaProvider) {
       throw new IntakePipelineError(`Taiga provider "${step.to}" not found`);
@@ -243,8 +326,45 @@ export class ProcessIntakePipelineUseCase {
     }
 
     const mapped = mapContent(step.on.content as PlaneContent, source);
+
+    // Two modes on the same target: a declared `item` means "update that item", otherwise create
+    // a new one. A declared but unresolved item is a skip, never a create: an empty template (no
+    // task linked to that merge request, say) must not spawn a duplicate issue.
+    if ("item" in (step.on.content as Record<string, unknown>)) {
+      if (mapped.item == null || mapped.item === "") {
+        log.warn(`Taiga update step "${step.to}": "item" resolved to empty, step skipped`);
+        return null;
+      }
+      log.info("Taiga update step", { taiga: taigaProvider.project, item: mapped.item });
+      return updateTaigaItemFromContent(client, taigaProvider, mapped);
+    }
+
     log.info("Intake pipeline started", { taiga: taigaProvider.project, name: mapped.name });
     return createTaigaIssueFromContent(client, taigaProvider, mapped);
+  }
+
+  /** Repository work: create the branch, open or reuse the draft MR, create an issue, comment. */
+  private async executeGitlabStep(
+    step: Rule,
+    source: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const provider = this.registry.getGitLab(step.to);
+    if (!provider) {
+      throw new IntakePipelineError(`GitLab provider "${step.to}" not found`);
+    }
+    const client = this.gitlabClients.get(step.to);
+    if (!client) {
+      throw new IntakePipelineError(`No GitLab API client configured for "${step.to}"`);
+    }
+
+    const { outputs } = await runGitLabStep(
+      client,
+      provider,
+      step.on.content as GitLabContent,
+      source,
+    );
+    log.debug(`-> ${step.to}: branch="${outputs.branch}" mr=${outputs.mrUrl || "—"}`);
+    return outputs;
   }
 
   /** Send a Pachka notification. Returns the step's outputs (per pachka schema) or null on failure. */
@@ -261,14 +381,22 @@ export class ProcessIntakePipelineUseCase {
     }
 
     const message = renderMessage(content.message || DEFAULT_INTAKE_TEMPLATE, source);
-    // Correlation key comes from the upstream source's entity id (Plane issue id for a plane step).
-    const correlationId = String(source.issueId ?? "");
+    // Correlation key: the upstream entity id. After a gitlab step that is the task the branch
+    // was made for (`taskId`), otherwise the tracker item the step just wrote (`issueId`).
+    const correlationId = String(source.issueId ?? source.taskId ?? "");
+
+    const destination = await resolvePachkaTarget(pachkaProvider, content, source, this.userDirectory);
+    if (!destination) return null;
 
     try {
-      const chatId = pachkaProvider.chatId;
+      const chatId = destination.entityId;
       const target = pachkaProvider.alias;
       const buttons = extractButtons(content.actions, source);
-      const msg = await this.messengerClient.sendMessage(chatId, message, { buttons });
+      const msg = await this.messengerClient.sendMessage(chatId, message, {
+        buttons,
+        // Left out for chats so the call stays the plain "send to a discussion" one.
+        ...(destination.entityType === "discussion" ? {} : { entityType: destination.entityType }),
+      });
       if (correlationId) this.messageStore.set(correlationId, target, msg.id, chatId);
       log.debug(`Intake -> ${step.to}: "${message}"`, { msgId: msg.id });
 

@@ -7,6 +7,7 @@ import type { IMessageStore } from "../../../src/modules/messenger/application/p
 import type { Config, Provider } from "../../../src/core/config";
 import type { Rule } from "../../../src/modules/messenger/domain/entities/notification";
 import { ProviderRegistry } from "../../../src/core/provider-registry";
+import { messengerClientMock, messageStoreMock, pachkaMessage } from "../../mocks";
 
 const MOCK_LABELS = [
   { id: "label-aaa", name: "Bug", color: "#ff0000" },
@@ -67,24 +68,25 @@ function createMockPlaneClient(): IPlaneApiClient {
 }
 
 function createMockMessengerClient(): IMessengerClient {
-  return {
-    sendMessage: mock(() => Promise.resolve({ id: 999 })),
-    editMessage: mock(() => Promise.resolve()),
+  return messengerClientMock({
+    sendMessage: mock(() => Promise.resolve(pachkaMessage())),
+    editMessage: mock(() => Promise.resolve(pachkaMessage())),
     addReaction: mock(() => Promise.resolve()),
     getOrCreateThread: mock(() => Promise.resolve({ id: 1, chat_id: 1, message_id: 1 })),
-    sendThreadMessage: mock(() => Promise.resolve({ id: 1000 })),
-  };
+    sendThreadMessage: mock(() => Promise.resolve(pachkaMessage({ id: 1000 }))),
+  });
 }
 
 function createMockMessageStore(): IMessageStore {
   const store = new Map<string, number>();
-  return {
+  return messageStoreMock({
     get: mock((issueId: string, target: string) => store.get(`${issueId}:${target}`) ?? null),
     set: mock((issueId: string, target: string, msgId: number) => {
       store.set(`${issueId}:${target}`, msgId);
     }),
+    delete: mock(() => {}),
     getByPachkaMessageId: mock(() => null),
-  };
+  });
 }
 
 function makeConfig(pipeline: Rule[], providers = PROVIDERS): Config {

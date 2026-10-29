@@ -16,10 +16,18 @@ import { Deduplicator } from "../../domain/services/deduplicator";
 import { extractButtons } from "../../../messenger/domain/services/action-executor";
 import { executeActions } from "../../../messenger/application/use-cases/execute-actions";
 import { sendPachkaMessage } from "../../../messenger/infrastructure/clients/pachka-webhook-sender";
-import { filterOutputs } from "../../../../core/pipeline";
+import { filterOutputs, onceKey } from "../../../../core/pipeline";
+import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
+import { rememberTaskLink } from "../../../gitlab/application/services/task-links";
 import { createPlaneIssueFromContent } from "../services/create-plane-issue";
 import { createTaigaIssueFromContent } from "../../../taiga/application/services/create-taiga-issue";
+import { updateTaigaItemFromContent } from "../../../taiga/application/services/update-taiga-item";
 import type { ITaigaApiClient } from "../../../taiga/application/ports/taiga-api.port";
+import type { IGitLabApiClient } from "../../../gitlab/application/ports/gitlab-api.port";
+import { runGitLabStep } from "../../../gitlab/application/services/run-gitlab-step";
+import type { GitLabContent } from "../../../messenger/domain/entities/notification";
+import type { PachkaUserDirectory } from "../../../messenger/application/services/pachka-user-directory";
+import { resolvePachkaTarget } from "../../../messenger/application/services/resolve-pachka-target";
 import type { Rule } from "../../../messenger/domain/entities/notification";
 import { log } from "../../../../core/logger";
 
@@ -46,6 +54,9 @@ export class ProcessPlaneWebhookUseCase {
     private memberMap: Map<string, PlaneMember>,
     private planeClients: Map<string, IPlaneApiClient> = new Map(),
     private taigaClients: Map<string, ITaigaApiClient> = new Map(),
+    private gitlabClients: Map<string, IGitLabApiClient> = new Map(),
+    private userDirectory: PachkaUserDirectory | null = null,
+    private pipelineState: IPipelineStateStore | null = null,
   ) {
     this.deduplicator = new Deduplicator();
   }
@@ -129,11 +140,23 @@ export class ProcessPlaneWebhookUseCase {
           break;
         }
 
+        // A step declared `once` runs a single time per key (see onceKey), across restarts.
+        const guard = onceKey(step, source);
+        if (guard && this.pipelineState && !this.pipelineState.markOnce(guard)) {
+          log.debug(`-> ${step.to}: already ran once, skipped`, { key: guard });
+          continue;
+        }
+
         const outputs = await this.executeStep(step, source);
         if (outputs) {
           context.set(step.to, filterOutputs(outputs, step.on.outputs));
           const targetType = parseRef(step.to).type;
-          if (targetType !== "plane" && targetType !== "taiga") sent++; // count notifications, not tracker writes
+          // Count notifications, not tracker or repository writes.
+          if (targetType === "pachka" || targetType === "webhook") sent++;
+          if (targetType === "gitlab") rememberTaskLink(this.pipelineState, step.from, outputs);
+        } else if (guard) {
+          // The step failed: release the key so the next event can try again.
+          this.pipelineState?.forget(guard);
         }
       }
     }
@@ -158,11 +181,15 @@ export class ProcessPlaneWebhookUseCase {
       if (toType === "taiga") {
         return await this.executeTaigaStep(step, source);
       }
+      if (toType === "gitlab") {
+        return await this.executeGitlabStep(step, source);
+      }
 
       const content = step.on.content as NotifyContent;
       const message = renderMessage(content.message ?? DEFAULT_TEMPLATE, source);
-      // Correlation key comes from the upstream source's entity id (Plane issue id for a plane trigger).
-      const correlationId = String(source.issueId ?? "");
+      // Correlation key: the upstream entity id (the Plane issue for a plane trigger, or the task
+      // a gitlab step did the repository work for).
+      const correlationId = String(source.issueId ?? source.taskId ?? "");
 
       if (toType === "pachka") {
         const pachkaProvider = this.registry.getPachka(step.to);
@@ -170,11 +197,18 @@ export class ProcessPlaneWebhookUseCase {
           log.warn(`-> ${step.to}: not configured or client unavailable`);
           return null;
         }
-        const chatId = pachkaProvider.chatId;
+        const destination = await resolvePachkaTarget(
+          pachkaProvider, content, source, this.userDirectory,
+        );
+        if (!destination) return null;
+        const chatId = destination.entityId;
         const target = pachkaProvider.alias;
         const previousMessageId = this.messageStore.get(correlationId, target);
         const buttons = extractButtons(content.actions, source);
-        const msg = await this.messengerClient.sendMessage(chatId, message, { buttons });
+        const msg = await this.messengerClient.sendMessage(chatId, message, {
+          buttons,
+          ...(destination.entityType === "discussion" ? {} : { entityType: destination.entityType }),
+        });
         this.messageStore.set(correlationId, target, msg.id, chatId);
         log.debug(`-> ${step.to}: "${message}"`, { msgId: msg.id });
 
@@ -226,7 +260,7 @@ export class ProcessPlaneWebhookUseCase {
     return outputs;
   }
 
-  /** Create a Taiga item from the event (mirror/escalate to a Taiga project). */
+  /** Create or update a Taiga item from the event (mirror/escalate, or write back a link). */
   private async executeTaigaStep(
     step: Rule,
     source: Record<string, unknown>,
@@ -238,8 +272,42 @@ export class ProcessPlaneWebhookUseCase {
       return null;
     }
     const mapped = mapContent(step.on.content as PlaneContent, source);
+
+    // A declared `item` means update, never create: an unresolved one is a skip, so an empty
+    // template cannot spawn a duplicate item.
+    if ("item" in (step.on.content as Record<string, unknown>)) {
+      if (mapped.item == null || mapped.item === "") {
+        log.warn(`-> ${step.to}: "item" resolved to empty, update skipped`);
+        return null;
+      }
+      const { outputs } = await updateTaigaItemFromContent(client, taigaProvider, mapped);
+      log.debug(`-> ${step.to}: updated item ${outputs.issueId}`);
+      return outputs;
+    }
+
     const { outputs } = await createTaigaIssueFromContent(client, taigaProvider, mapped);
     log.debug(`-> ${step.to}: created item ${outputs.issueId}`);
+    return outputs;
+  }
+
+  /** Repository work for the event: branch, draft MR, issue, comment. */
+  private async executeGitlabStep(
+    step: Rule,
+    source: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    const provider = this.registry.getGitLab(step.to);
+    const client = this.gitlabClients.get(step.to);
+    if (!provider || !client) {
+      log.warn(`-> ${step.to}: gitlab provider or API client not configured`);
+      return null;
+    }
+    const { outputs } = await runGitLabStep(
+      client,
+      provider,
+      step.on.content as GitLabContent,
+      source,
+    );
+    log.debug(`-> ${step.to}: branch="${outputs.branch}" mr=${outputs.mrUrl || "—"}`);
     return outputs;
   }
 }
