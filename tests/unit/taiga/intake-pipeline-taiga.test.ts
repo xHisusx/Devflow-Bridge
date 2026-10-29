@@ -8,6 +8,7 @@ import type { IMessageStore } from "../../../src/modules/messenger/application/p
 import type { Config, Provider } from "../../../src/core/config";
 import type { Rule } from "../../../src/modules/messenger/domain/entities/notification";
 import { ProviderRegistry } from "../../../src/core/provider-registry";
+import { messengerClientMock, messageStoreMock, pachkaMessage, taigaClientMock } from "../../mocks";
 
 const PROVIDERS: Provider[] = [
   { type: "taiga", alias: "support", baseUrl: "https://taiga.test", project: "support-desk" },
@@ -41,48 +42,49 @@ const NOTIFY_RULE: Rule = {
 };
 
 function createMockTaigaClient(): ITaigaApiClient {
-  return {
+  return taigaClientMock({
     getProjectBySlug: mock(() =>
       Promise.resolve({ id: 42, slug: "support-desk", name: "Support Desk" }),
     ),
     createItem: mock(() =>
       Promise.resolve({
         id: 777, ref: 13, subject: "S", description: "", tags: [],
-        status: null, statusName: null, typeId: null,
+        status: null, statusName: null, typeId: null, priorityId: null,
       }),
     ),
     getItem: mock(() =>
       Promise.resolve({
-        id: 777, ref: 13, subject: "S", version: 1, status: 1,
-        statusName: null, assigneeName: null, typeId: null,
+        id: 777, ref: 13, subject: "S", description: "", tags: [], version: 1, status: 1,
+        statusName: null, assigneeName: null, typeId: null, priorityId: null,
       }),
     ),
     getItemStatuses: mock(() => Promise.resolve([])),
     getIssueTypes: mock(() => Promise.resolve([])),
     updateItem: mock(() => Promise.resolve()),
     getMemberIdByEmail: mock(() => Promise.resolve(null)),
-  };
+  });
 }
 
 function createMockMessengerClient(): IMessengerClient {
-  return {
-    sendMessage: mock(() => Promise.resolve({ id: 999 })),
-    editMessage: mock(() => Promise.resolve()),
+  return messengerClientMock({
+    sendMessage: mock(() => Promise.resolve(pachkaMessage())),
+    editMessage: mock(() => Promise.resolve(pachkaMessage())),
     addReaction: mock(() => Promise.resolve()),
     getOrCreateThread: mock(() => Promise.resolve({ id: 1, chat_id: 1, message_id: 1 })),
-    sendThreadMessage: mock(() => Promise.resolve({ id: 1000 })),
-  };
+    sendThreadMessage: mock(() => Promise.resolve(pachkaMessage({ id: 1000 }))),
+  });
 }
 
 function createMockMessageStore(): IMessageStore {
   const store = new Map<string, number>();
-  return {
+  return messageStoreMock({
     get: mock((issueId: string, target: string) => store.get(`${issueId}:${target}`) ?? null),
     set: mock((issueId: string, target: string, msgId: number) => {
       store.set(`${issueId}:${target}`, msgId);
     }),
+    delete: mock(() => {}),
     getByPachkaMessageId: mock(() => null),
-  };
+  });
 }
 
 function makeConfig(pipeline: Rule[], providers = PROVIDERS): Config {

@@ -2,26 +2,19 @@ import type { ProviderRegistry } from "../../../../core/provider-registry";
 import type { Config, TaigaProvider, PachkaProvider } from "../../../../core/config";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
 import type { IMessageStore } from "../../../messenger/application/ports/message-store.port";
-import { buildFeedbackButtons, statusLabel, buildItemUrl } from "../../domain/services/feedback-buttons";
+import {
+  buildFeedbackButtons,
+  keepLinkButtons,
+  statusLabel,
+  buildItemUrl,
+} from "../../domain/services/feedback-buttons";
+import { extractProjectSlug } from "../../domain/services/taiga-trigger";
 import { findNotifyTemplate } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
+import type { TaigaWebhookPayload } from "../../domain/entities/taiga-webhook-payload";
 import { log } from "../../../../core/logger";
 
-/** Relevant subset of Taiga's webhook payload (nested objects come pre-serialized). */
-export interface TaigaWebhookPayload {
-  action: string; // "create" | "change" | "delete" | "test"
-  type: string; // "issue" | "userstory" | "task" | ...
-  data?: {
-    id?: number;
-    ref?: number;
-    subject?: string;
-    project?: { permalink?: string; name?: string };
-    status?: { name?: string };
-    assigned_to?: { full_name_display?: string; full_name?: string } | null;
-    type?: { name?: string } | null;
-  };
-  change?: { diff?: Record<string, unknown> };
-}
+export type { TaigaWebhookPayload };
 
 export interface TaigaWebhookResult {
   ok: boolean;
@@ -66,7 +59,7 @@ export class ProcessTaigaWebhookUseCase {
 
       const buttonsMap = provider.feedback.buttons ?? {};
       const key = Object.keys(buttonsMap).find((k) => k.toLowerCase() === statusName.toLowerCase());
-      const buttons = buildFeedbackButtons(provider.alias, itemId, key ? buttonsMap[key] : []);
+      const nextButtons = buildFeedbackButtons(provider.alias, itemId, key ? buttonsMap[key] : []);
       const vars = this.buildVars(provider, payload, itemId, statusName);
 
       for (const pachka of this.registry.getByType("pachka") as PachkaProvider[]) {
@@ -76,9 +69,10 @@ export class ProcessTaigaWebhookUseCase {
           const template = this.config
             ? findNotifyTemplate(this.config, `taiga:${provider.alias}`, pachka.alias)
             : null;
-          const content = template
-            ? renderMessage(template, vars)
-            : (await this.messengerClient.getMessage(messageId)).content;
+          // Read either way: the message's link buttons survive the transition (see keepLinkButtons).
+          const current = await this.messengerClient.getMessage(messageId);
+          const content = template ? renderMessage(template, vars) : current.content;
+          const buttons = [...keepLinkButtons(current.buttons), ...nextButtons];
           await this.messengerClient.editMessage(messageId, content, { buttons });
           updated++;
           log.info("Taiga webhook: message synced", {
@@ -107,6 +101,7 @@ export class ProcessTaigaWebhookUseCase {
     return {
       issueId: String(itemId),
       issueUrl: buildItemUrl(provider, provider.project, ref),
+      description: data.description ?? "",
       seq: ref,
       identifier: `#${ref}`,
       name: data.subject ?? "",
@@ -117,11 +112,4 @@ export class ProcessTaigaWebhookUseCase {
       type: data.type?.name ?? "—",
     };
   }
-}
-
-/** "https://taiga.example.com/project/my-slug" -> "my-slug". */
-function extractProjectSlug(permalink?: string): string | null {
-  if (!permalink) return null;
-  const parts = permalink.replace(/\/$/, "").split("/");
-  return parts[parts.length - 1] || null;
 }

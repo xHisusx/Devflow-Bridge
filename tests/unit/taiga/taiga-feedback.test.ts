@@ -4,6 +4,7 @@ import type { ITaigaApiClient } from "../../../src/modules/taiga/application/por
 import type { IMessengerClient } from "../../../src/modules/messenger/application/ports/messenger-client.port";
 import type { Config, Provider } from "../../../src/core/config";
 import { ProviderRegistry } from "../../../src/core/provider-registry";
+import { messengerClientMock, pachkaMessage, taigaClientMock } from "../../mocks";
 
 const PROVIDERS: Provider[] = [
   {
@@ -40,37 +41,37 @@ const STATUSES = [
 ];
 
 function createMockTaigaClient(): ITaigaApiClient {
-  return {
+  return taigaClientMock({
     getProjectBySlug: mock(() =>
       Promise.resolve({ id: 42, slug: "support-desk", name: "Support Desk" }),
     ),
     createItem: mock(() =>
       Promise.resolve({
         id: 777, ref: 13, subject: "S", description: "", tags: [],
-        status: null, statusName: null, typeId: null,
+        status: null, statusName: null, typeId: null, priorityId: null,
       }),
     ),
     getItem: mock(() =>
       Promise.resolve({
-        id: 777, ref: 13, subject: "Broken login", version: 5, status: 1,
-        statusName: "In progress", assigneeName: "Иван Петров", typeId: 7,
+        id: 777, ref: 13, subject: "Broken login", description: "", tags: [], version: 5, status: 1,
+        statusName: "In progress", assigneeName: "Иван Петров", typeId: 7, priorityId: null,
       }),
     ),
     getItemStatuses: mock(() => Promise.resolve(STATUSES)),
     getIssueTypes: mock(() => Promise.resolve([{ id: 7, name: "Ошибка" }])),
     updateItem: mock(() => Promise.resolve()),
     getMemberIdByEmail: mock(() => Promise.resolve(314)),
-  };
+  });
 }
 
 function createMockMessengerClient(): IMessengerClient {
-  return {
-    sendMessage: mock(() => Promise.resolve({ id: 999 })),
-    editMessage: mock(() => Promise.resolve()),
+  return messengerClientMock({
+    sendMessage: mock(() => Promise.resolve(pachkaMessage())),
+    editMessage: mock(() => Promise.resolve(pachkaMessage())),
     addReaction: mock(() => Promise.resolve()),
     getOrCreateThread: mock(() => Promise.resolve({ id: 1, chat_id: 1, message_id: 1 })),
-    sendThreadMessage: mock(() => Promise.resolve({ id: 1000 })),
-    getMessage: mock(() => Promise.resolve({ id: 100, content: "original text" })),
+    sendThreadMessage: mock(() => Promise.resolve(pachkaMessage({ id: 1000 }))),
+    getMessage: mock(() => Promise.resolve(pachkaMessage({ id: 100, content: "original text" }))),
     getUser: mock(() =>
       Promise.resolve({
         id: 9,
@@ -80,7 +81,7 @@ function createMockMessengerClient(): IMessengerClient {
         ],
       }),
     ),
-  };
+  });
 }
 
 const registry = new ProviderRegistry(PROVIDERS);
@@ -120,6 +121,37 @@ describe("HandleTaigaFeedbackUseCase", () => {
       { status: 2, assigned_to: 314 },
       5,
     );
+  });
+
+  test("accept: keeps the message's link buttons and swaps only the action ones", async () => {
+    const taigaClient = createMockTaigaClient();
+    const messengerClient = createMockMessengerClient();
+    (messengerClient.getMessage as ReturnType<typeof mock>).mockImplementation(() =>
+      Promise.resolve(
+        pachkaMessage({
+          id: 100,
+          content: "original text",
+          buttons: [
+            [{ text: "📋 Задача", url: "https://taiga.test/task/13" }],
+            [{ text: "🔀 MR", url: "https://git.test/mr/14" }],
+            [{ text: "👍 Взять в работу", data: "taiga:support:accept:777" }],
+          ],
+        }),
+      ),
+    );
+    const useCase = makeUseCase(taigaClient, messengerClient);
+
+    await useCase.execute({ data: "taiga:support:accept:777", pachkaUserId: 9, messageId: 100 });
+
+    // after taking the task the person must still be able to open the task and the MR
+    expect(messengerClient.editMessage).toHaveBeenCalledWith(100, "original text", {
+      buttons: [
+        { text: "📋 Задача", url: "https://taiga.test/task/13" },
+        { text: "🔀 MR", url: "https://git.test/mr/14" },
+        { text: "⏹️ Поставить на паузу", data: "taiga:support:pause:777" },
+        { text: "✅ Завершить", data: "taiga:support:close:777" },
+      ],
+    });
   });
 
   test("accept: swaps message buttons to the In progress set", async () => {
@@ -234,8 +266,8 @@ describe("HandleTaigaFeedbackUseCase", () => {
         ],
       },
     );
-    // content came from the template, not from the old message
-    expect(messengerClient.getMessage).not.toHaveBeenCalled();
+    // the old message is still read for its link buttons, but the text came from the template
+    expect(messengerClient.getMessage).toHaveBeenCalledWith(100);
   });
 
   test("unknown status name is rejected without patching", async () => {

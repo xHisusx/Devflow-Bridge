@@ -3,6 +3,7 @@ import { createTaigaIssueFromContent, TaigaWriteError } from "../../../src/modul
 import { buildItemVars } from "../../../src/modules/taiga/application/services/feedback-message";
 import type { ITaigaApiClient } from "../../../src/modules/taiga/application/ports/taiga-api.port";
 import type { TaigaProvider } from "../../../src/core/config";
+import { taigaClientMock } from "../../mocks";
 
 const PRIORITIES = [
   { id: 89, name: "Low" },
@@ -12,7 +13,7 @@ const PRIORITIES = [
 ];
 
 function createMockClient(overrides: Partial<ITaigaApiClient> = {}): ITaigaApiClient {
-  return {
+  return taigaClientMock({
     getProjectBySlug: mock(() => Promise.resolve({ id: 30, slug: "devops", name: "DevOps" })),
     createItem: mock(() =>
       Promise.resolve({
@@ -22,7 +23,7 @@ function createMockClient(overrides: Partial<ITaigaApiClient> = {}): ITaigaApiCl
     ),
     getItem: mock(() =>
       Promise.resolve({
-        id: 777, ref: 13, subject: "X", version: 1, status: 1,
+        id: 777, ref: 13, subject: "X", description: "", tags: [], version: 1, status: 1,
         statusName: "New", assigneeName: null, typeId: null, priorityId: 95,
       }),
     ),
@@ -32,7 +33,7 @@ function createMockClient(overrides: Partial<ITaigaApiClient> = {}): ITaigaApiCl
     updateItem: mock(() => Promise.resolve()),
     getMemberIdByEmail: mock(() => Promise.resolve(null)),
     ...overrides,
-  };
+  });
 }
 
 const PROVIDER: TaigaProvider = {
@@ -120,7 +121,7 @@ describe("buildItemVars — priority", () => {
     const client = createMockClient({
       getItem: mock(() =>
         Promise.resolve({
-          id: 777, ref: 13, subject: "X", version: 1, status: 1,
+          id: 777, ref: 13, subject: "X", description: "", tags: [], version: 1, status: 1,
           statusName: "New", assigneeName: null, typeId: null, priorityId: null,
         }),
       ),

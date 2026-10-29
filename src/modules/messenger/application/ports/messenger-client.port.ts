@@ -1,11 +1,23 @@
 import type { PachkaMessage, PachkaButton, PachkaThread, PachkaUser } from "../../domain/entities/message";
 import type { FormViewPayload } from "../../domain/entities/form";
 
+/** Pachka message target: a chat/channel, a thread, or a user (direct message). */
+export type PachkaEntityType = "discussion" | "thread" | "user";
+
 export interface IMessengerClient {
-  sendMessage(chatId: number, content: string, opts?: { buttons?: PachkaButton[]; entityType?: "discussion" | "thread" }): Promise<PachkaMessage>;
+  /**
+   * Send a message. `chatId` is the entity id: a chat id for "discussion", a thread id for
+   * "thread", or a user id for "user" (the personal chat is created by Pachka if needed).
+   */
+  sendMessage(chatId: number, content: string, opts?: { buttons?: PachkaButton[]; entityType?: PachkaEntityType }): Promise<PachkaMessage>;
   /** Edit a message. An explicitly empty `buttons` array clears the message's buttons. */
   editMessage(messageId: number, content: string, opts?: { buttons?: PachkaButton[] }): Promise<PachkaMessage>;
   getUser(userId: number): Promise<PachkaUser>;
+  /**
+   * List workspace members (cursor-paginated internally). `query` narrows the search by name,
+   * email, phone or nickname. Needs the `users:read` scope.
+   */
+  listUsers(opts?: { query?: string; limit?: number }): Promise<PachkaUser[]>;
   deleteMessage(messageId: number): Promise<void>;
   getMessage(messageId: number): Promise<PachkaMessage>;
   getMessages(chatId: number, limit?: number): Promise<PachkaMessage[]>;

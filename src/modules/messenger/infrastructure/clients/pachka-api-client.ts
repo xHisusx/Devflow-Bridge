@@ -1,6 +1,9 @@
 import type { PachkaMessage, PachkaButton, PachkaThread, PachkaUser } from "../../domain/entities/message";
 import type { FormViewPayload } from "../../domain/entities/form";
-import type { IMessengerClient } from "../../application/ports/messenger-client.port";
+import type { IMessengerClient, PachkaEntityType } from "../../application/ports/messenger-client.port";
+
+/** Safety cap for cursor pagination of /users (50 per page by default). */
+const MAX_USER_PAGES = 40;
 
 export class PachkaClient implements IMessengerClient {
   private baseUrl: string;
@@ -65,7 +68,7 @@ export class PachkaClient implements IMessengerClient {
   async sendMessage(
     chatId: number,
     content: string,
-    opts?: { buttons?: PachkaButton[]; entityType?: "discussion" | "thread" }
+    opts?: { buttons?: PachkaButton[]; entityType?: PachkaEntityType }
   ): Promise<PachkaMessage> {
     const body: Record<string, unknown> = {
       message: {
@@ -109,6 +112,30 @@ export class PachkaClient implements IMessengerClient {
 
   async getUser(userId: number): Promise<PachkaUser> {
     return this.request<PachkaUser>("GET", `/users/${userId}`);
+  }
+
+  /** Walk Pachka's cursor pagination (`meta.paginate.next_page`) and return every page's users. */
+  async listUsers(opts?: { query?: string; limit?: number }): Promise<PachkaUser[]> {
+    const limit = opts?.limit ?? 50;
+    const users: PachkaUser[] = [];
+    let cursor: string | null = null;
+
+    for (let page = 0; page < MAX_USER_PAGES; page++) {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (opts?.query) params.set("query", opts.query);
+      if (cursor) params.set("cursor", cursor);
+
+      const raw = await this.requestRaw<{
+        data: PachkaUser[];
+        meta?: { paginate?: { next_page?: string | null } };
+      }>("GET", `/users?${params.toString()}`);
+
+      users.push(...(raw.data ?? []));
+      cursor = raw.meta?.paginate?.next_page ?? null;
+      if (!cursor) break;
+    }
+
+    return users;
   }
 
   async deleteMessage(messageId: number): Promise<void> {
