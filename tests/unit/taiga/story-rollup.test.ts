@@ -3,6 +3,7 @@ import { storyTaskProgress } from "../../../src/modules/taiga/application/servic
 import { ProcessTaigaTriggerUseCase } from "../../../src/modules/taiga/application/use-cases/process-taiga-trigger";
 import { ProcessTaigaWebhookUseCase } from "../../../src/modules/taiga/application/use-cases/process-taiga-webhook";
 import { HandleTaigaFeedbackUseCase } from "../../../src/modules/taiga/application/use-cases/handle-taiga-feedback";
+import { ProcessIntakePipelineUseCase } from "../../../src/modules/plane/application/use-cases/process-intake-pipeline";
 import { ProviderRegistry } from "../../../src/core/provider-registry";
 import type { Config, Provider } from "../../../src/core/config";
 import type { Rule } from "../../../src/modules/messenger/domain/entities/notification";
@@ -158,8 +159,12 @@ function taskPayload(status = "Ready for Test"): TaigaWebhookPayload {
   };
 }
 
-function runTrigger(payload: TaigaWebhookPayload, tasks: TaigaTaskSummary[]) {
-  const config: Config = { providers: PROVIDERS, rules: [ROLLUP] };
+function runTrigger(
+  payload: TaigaWebhookPayload,
+  tasks: TaigaTaskSummary[],
+  pipelines: Rule[][] = [ROLLUP],
+) {
+  const config: Config = { providers: PROVIDERS, rules: pipelines };
   const seen: Record<string, unknown>[] = [];
   const runner = {
     run: mock((_p: Rule[], outputs: Record<string, unknown>) => {
@@ -171,7 +176,10 @@ function runTrigger(payload: TaigaWebhookPayload, tasks: TaigaTaskSummary[]) {
   const useCase = new ProcessTaigaTriggerUseCase(
     config,
     new ProviderRegistry(PROVIDERS),
-    new Map([["taiga:med2", client]]),
+    new Map([
+      ["taiga:med2", client],
+      ["taiga:med2-us", client],
+    ]),
     runner,
   );
   return useCase.execute(payload).then((result) => ({ result, outputs: seen[0], client }));
@@ -215,7 +223,63 @@ describe("allTasks roll-up gate", () => {
   });
 });
 
+// ── Taking a task back into work hands the story back ──
+
+/**
+ * The mirror image of the roll-up, and what makes it repeatable: while the story sits in testing,
+ * a task re-entering work means the story is no longer testable, so it goes back to the
+ * developers. Without this the story would stay in "Testing" for good and finishing that task
+ * again would move nothing — leaving the testers with no new card (`parentStatus` guards it).
+ */
+const REOPEN: Rule[] = [
+  {
+    from: "taiga:med2",
+    to: "taiga:med2-us",
+    on: {
+      entity: "task",
+      changed: "status",
+      status: ["To do", "In Progress", "Pause", "Review"],
+      parentStatus: "Testing",
+      content: { item: "{{parentId}}", status: "In Progress" },
+    },
+  },
+];
+
+function reopen(taskStatus: string, storyStatus: string | null) {
+  const payload = taskPayload(taskStatus);
+  if (storyStatus === null) payload.data!.user_story = null;
+  else payload.data!.user_story!.status = { name: storyStatus };
+  return runTrigger(payload, [], [REOPEN]);
+}
+
+describe("parentStatus gate", () => {
+  test("a task re-entering work takes its story out of testing", async () => {
+    const { result, outputs } = await reopen("In Progress", "Testing");
+
+    expect(result.triggered).toBe(1);
+    // the step writes to the story, so the story has to be addressable from the task's event
+    expect(outputs).toMatchObject({ parentId: "681", entity: "task", status: "In Progress" });
+  });
+
+  test("a story that is not in testing is left where it is", async () => {
+    // a task moving around while the story is still being built is ordinary progress, and
+    // rewriting the story's status on every such move would comment on it each time
+    expect((await reopen("In Progress", "In Progress")).result.triggered).toBe(0);
+    expect((await reopen("Review", "New")).result.triggered).toBe(0);
+  });
+
+  test("a task finished rather than reopened does not concern the story", async () => {
+    expect((await reopen("Ready for Test", "Testing")).result.triggered).toBe(0);
+  });
+
+  test("a task with no story has no parent status to match", async () => {
+    expect((await reopen("In Progress", null)).result.triggered).toBe(0);
+  });
+});
+
 // ── The card in the testers' channel ──
+
+const STUB = "⤵️ Карточка устарела — актуальная ниже";
 
 const TESTERS_CARD: Rule[] = [
   {
@@ -226,6 +290,17 @@ const TESTERS_CARD: Rule[] = [
       status: "Testing",
       content: {
         message: "🧪 [{{identifier}} {{name}}]({{issueUrl}})\n🦸 {{assignee}}\n📋 {{status}}",
+        actions: [
+          {
+            type: "buttons",
+            buttons: [
+              { text: "🌐 Перейти на сайт", url: "https://med2.test" },
+              { text: "↩️ Вернуть в работу", callbackData: "taiga:med2-us:rework:{{issueId}}" },
+              { text: "✅ Завершить", callbackData: "taiga:med2-us:close:{{issueId}}" },
+            ],
+          },
+          { type: "editPrevious", message: STUB },
+        ],
         buttonsByStatus: {
           Testing: [
             { text: "↩️ Вернуть в работу", action: "rework" },
@@ -308,6 +383,17 @@ describe("story card in the testers' channel", () => {
       buttons: [SITE],
     });
   });
+
+  test("a story that never left testing is not announced again", async () => {
+    // Writing "Testing" over "Testing" changes nothing, and Taiga records such a write as its
+    // comment alone — the event arrives without a status diff. So a story kept in testing while
+    // its tasks go back and forth produces no card, which is what the parentStatus rule prevents.
+    const payload = storyPayload();
+    payload.change = { comment: "🧪 Все задачи истории готовы к тестированию", diff: {} };
+
+    expect((await runTrigger(payload, [], [TESTERS_CARD])).result.triggered).toBe(0);
+    expect((await runTrigger(storyPayload(), [], [TESTERS_CARD])).result.triggered).toBe(1);
+  });
 });
 
 describe("testers' buttons write back to Taiga", () => {
@@ -384,5 +470,75 @@ describe("testers' buttons write back to Taiga", () => {
 
     expect(result).toMatchObject({ ok: true, status: "Done" });
     expect(client.updateItem).toHaveBeenCalledWith("user_story", 681, { status: 114 }, 11);
+  });
+});
+
+// ── A story that comes back for testing ──
+
+describe("a second hand-off of the same story", () => {
+  const SITE = { text: "🌐 Перейти на сайт", url: "https://med2.test" };
+  const ACTIONS = [
+    { text: "↩️ Вернуть в работу", data: "taiga:med2-us:rework:681" },
+    { text: "✅ Завершить", data: "taiga:med2-us:close:681" },
+  ];
+
+  const TRIGGER = {
+    issueId: "681",
+    identifier: "#250",
+    name: "ЭФ: формирование PDF-формы расчёта НМЦК",
+    issueUrl: "https://tasks.test/project/med-20/us/250",
+    assignee: "Данила Коновницын",
+    status: "Тестирование 🧪",
+  };
+
+  function harness() {
+    let nextId = 500;
+    const messengerClient = messengerClientMock({
+      sendMessage: mock(() => Promise.resolve(pachkaMessage({ id: nextId++ }))),
+      editMessage: mock(() => Promise.resolve(pachkaMessage({ id: 500 }))),
+      getMessage: mock((id: number) =>
+        Promise.resolve(
+          pachkaMessage({ id, content: "карточка", buttons: [[SITE], ACTIONS] }),
+        ),
+      ),
+    });
+    const rows = new Map<string, number>();
+    const messageStore = messageStoreMock({
+      get: mock((id: string, target: string) => rows.get(`${id}:${target}`) ?? null),
+      set: mock((id: string, target: string, msgId: number) => {
+        rows.set(`${id}:${target}`, msgId);
+      }),
+    });
+    const engine = new ProcessIntakePipelineUseCase(
+      { providers: PROVIDERS, rules: [TESTERS_CARD] },
+      new ProviderRegistry(PROVIDERS),
+      new Map(),
+      messengerClient,
+      messageStore,
+    );
+    return { engine, messengerClient, messageStore };
+  }
+
+  test("posts a fresh card and retires the previous one", async () => {
+    const { engine, messengerClient, messageStore } = harness();
+
+    await engine.run(TESTERS_CARD, TRIGGER);
+    await engine.run(TESTERS_CARD, TRIGGER);
+
+    // the testers are pinged again — editing a message notifies nobody
+    expect(messengerClient.sendMessage).toHaveBeenCalledTimes(2);
+    // and the card they already have stops being a card: no live actions, link kept
+    expect(messengerClient.editMessage).toHaveBeenCalledWith(500, STUB, { buttons: [SITE] });
+    // tracking follows the new one, so later status changes re-render that
+    expect(messageStore.get("681", "med2-testing")).toBe(501);
+  });
+
+  test("the first hand-off has no previous card to retire", async () => {
+    const { engine, messengerClient } = harness();
+
+    await engine.run(TESTERS_CARD, TRIGGER);
+
+    expect(messengerClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(messengerClient.editMessage).not.toHaveBeenCalled();
   });
 });

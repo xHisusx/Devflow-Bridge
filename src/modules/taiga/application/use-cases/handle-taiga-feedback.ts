@@ -7,9 +7,9 @@ import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-
 import {
   buildFeedbackButtons,
   buttonsForStatus,
-  keepLinkButtons,
   TAIGA_CALLBACK_PREFIX,
 } from "../../domain/services/feedback-buttons";
+import { keepLinkButtons } from "../../../messenger/domain/services/action-executor";
 import { findNotifyContent, buildItemVars, withCardVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
 import {

@@ -2,6 +2,8 @@ import { describe, test, expect, mock } from "bun:test";
 import { createHmac } from "node:crypto";
 import { verifyTaigaSignature } from "../../../src/modules/taiga/infrastructure/services/taiga-webhook-verifier";
 import { ProcessTaigaWebhookUseCase, type TaigaWebhookPayload } from "../../../src/modules/taiga/application/use-cases/process-taiga-webhook";
+import type { ProcessTaigaTriggerUseCase } from "../../../src/modules/taiga/application/use-cases/process-taiga-trigger";
+import { taigaWebhookRoute } from "../../../src/modules/taiga/infrastructure/webhooks/taiga-webhook.route";
 import type { IMessengerClient } from "../../../src/modules/messenger/application/ports/messenger-client.port";
 import type { IMessageStore } from "../../../src/modules/messenger/application/ports/message-store.port";
 import type { Config, Provider } from "../../../src/core/config";
@@ -291,5 +293,61 @@ describe("ProcessTaigaWebhookUseCase", () => {
 
     expect(result.updated).toBe(0);
     expect(messengerClient.editMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /webhook/taiga", () => {
+  test("pipelines run before the card sync, never beside it", async () => {
+    const order: string[] = [];
+    // slow on purpose: run side by side, the sync would finish first and could restore a card
+    // the pipeline has just retired
+    const trigger = {
+      execute: mock(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        order.push("trigger");
+        return { ok: true, triggered: 1 };
+      }),
+    };
+    const sync = {
+      execute: mock(async () => {
+        order.push("sync");
+        return { ok: true, updated: 2 };
+      }),
+    };
+
+    const app = taigaWebhookRoute({
+      useCase: sync as unknown as ProcessTaigaWebhookUseCase,
+      trigger: trigger as unknown as ProcessTaigaTriggerUseCase,
+    });
+    const response = await app.handle(
+      new Request("http://localhost/webhook/taiga", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changePayload()),
+      }),
+    );
+
+    expect(order).toEqual(["trigger", "sync"]);
+    expect(await response.json()).toEqual({ ok: true, updated: 2, triggered: 1 });
+  });
+
+  test("a failing pipeline does not hide the card sync", async () => {
+    const trigger = { execute: mock(() => Promise.reject(new Error("GitLab down"))) };
+    const sync = { execute: mock(() => Promise.resolve({ ok: true, updated: 1 })) };
+
+    const app = taigaWebhookRoute({
+      useCase: sync as unknown as ProcessTaigaWebhookUseCase,
+      trigger: trigger as unknown as ProcessTaigaTriggerUseCase,
+    });
+    const response = await app.handle(
+      new Request("http://localhost/webhook/taiga", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changePayload()),
+      }),
+    );
+
+    expect(sync.execute).toHaveBeenCalled();
+    expect(await response.json()).toEqual({ ok: true, updated: 1, triggered: 0 });
   });
 });

@@ -59,7 +59,7 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 
 - `domain/entities/` — `PachkaMessage`, `PachkaButton`, `PachkaThread`, `Rule`, `RuleAction`, `RuleCondition`
 - `domain/entities/form.ts` — типы форм (`FormBlock`, `FormViewPayload`), хелперы callbackData/callback_id
-- `domain/services/action-executor.ts` — `extractButtons()` (чистая логика)
+- `domain/services/action-executor.ts` — `extractButtons()`, `keepLinkButtons()` (чистая логика кнопок)
 - `application/ports/messenger-client.port.ts` — интерфейс `IMessengerClient`
 - `application/ports/message-store.port.ts` — интерфейс `IMessageStore`
 - `application/use-cases/execute-actions.ts` — `executeActions()` (reaction, threadReply, editPrevious)
@@ -76,7 +76,7 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 
 - `domain/entities/taiga-webhook-payload.ts` — тип payload вебхука Taiga
 - `domain/services/taiga-trigger.ts` — `extractTaigaFacts()`, `matchesTaigaCondition()`, `buildTaigaTriggerOutputs()`, `normalizeTaigaEntity()`, `extractProjectSlug()`, `milestoneName()`, `normalizeTags()` (чистые функции)
-- `domain/services/feedback-buttons.ts` — `buildFeedbackButtons()`, `keepLinkButtons()`, `statusLabel()`, `buildItemUrl()`
+- `domain/services/feedback-buttons.ts` — `buildFeedbackButtons()`, `buttonsForStatus()`, `statusLabel()`, `buildItemUrl()`
 - `application/ports/taiga-api.port.ts` — интерфейс `ITaigaApiClient`
 - `application/services/create-taiga-issue.ts` — `createTaigaIssueFromContent()`, `TaigaWriteError` (создание item + сборка outputs)
 - `application/services/update-taiga-item.ts` — `updateTaigaItemFromContent()` (обновление: кастомные поля, статус, исполнитель, комментарий; неизвестное поле — warning, не ошибка)
@@ -249,8 +249,10 @@ E2E-тесты отправляют реальные сообщения в Па�
   { "text": "Текст", "callbackData": "action:{{issueId}}" }    // интерактивная
 ]}
 
-// Редактирование ранее отправленного сообщения по этой задаче
-{ "type": "editPrevious", "message": "Новый текст" }
+// Редактирование ранее отправленного сообщения по этой задаче.
+// Кнопки-действия у него снимаются (ссылки остаются): устаревшая карточка не должна
+// менять статус в трекере, продолжая показывать старое состояние.
+{ "type": "editPrevious", "message": "⤵️ Карточка устарела — актуальная ниже" }
 
 // Закрепление (зарезервировано)
 { "type": "pin" }
@@ -264,7 +266,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane"` | Plane (через webhook) |
-| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story), `allTasks` (все задачи user story события — у task родительской, у user story её самой — в перечисленных статусах; стоит запрос к API, поэтому проверяется последним, а история без задач не проходит никогда) |
+| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story), `allTasks` (все задачи user story события — у task родительской, у user story её самой — в перечисленных статусах; стоит запрос к API, поэтому проверяется последним, а история без задач не проходит никогда), `parentStatus` (статус родительской user story события-задачи; приходит в payload, поэтому бесплатен — у событий других сущностей пуст, так что правило с этим условием на них не срабатывает) |
 | `"gitlab:<alias>"` | Вебхук GitLab: событие репозитория (MR открыт/смержен/закрыт, push). Условия: `event`, `action`, `state`, `target`, `branch`, `draft`, `labels` |
 | `"api:intake"` | API endpoint `/api/plane/intake-issues` |
 | `"form:<alias>"` | Отправка формы Пачки (модального представления) провайдера `form:<alias>` |
@@ -430,7 +432,7 @@ Id обращения в `content` не передаётся — шаг чита
 
 Провайдер события определяется по slug проекта из `data.project.permalink` и по `entity` (один проект бывает подключён двумя провайдерами — задачи и user story, — и карточка относится к тому, чья сущность совпала с сущностью события); тестовый пинг Taiga (`action: "test"`) отвечает `200 ok`.
 
-Синхронизация сообщения (`ProcessTaigaWebhookUseCase`) и запуск пайплайнов (`ProcessTaigaTriggerUseCase`) — две независимые ветки одного роута: одно событие может и перерисовать карточку, и запустить пайплайн, и падение одной не скрывает другую. Ответ: `{ "ok": true, "updated": <сообщений>, "triggered": <пайплайнов> }`. Всё, что запускается событием Taiga (в том числе `to: bitrix:*`), идёт через триггер и общий движок пайплайнов, а не отдельным путём.
+Синхронизация сообщения (`ProcessTaigaWebhookUseCase`) и запуск пайплайнов (`ProcessTaigaTriggerUseCase`) — две независимые ветки одного роута: одно событие может и перерисовать карточку, и запустить пайплайн, и падение одной не скрывает другую. Но не параллельные: сначала пайплайны, потом синхронизация — пайплайн может заменить карточку (отправить новую, свернуть старую), и синхронизация должна работать с актуальной, иначе два редактирования гоняются за одно сообщение. Ответ: `{ "ok": true, "updated": <сообщений>, "triggered": <пайплайнов> }`. Всё, что запускается событием Taiga (в том числе `to: bitrix:*`), идёт через триггер и общий движок пайплайнов, а не отдельным путём.
 
 ### Формы Пачки (модальные представления)
 
@@ -707,7 +709,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 5. Условия в `on` комбинируются через AND. Массивы значений — через OR
 6. `stateGroup` полезен когда имена состояний неизвестны, но известна группа
 7. Не дублируй правила: `state: "Done"` и `stateGroup: "completed"` пересекаются (Done входит в completed)
-8. `editPrevious` пропускается если предыдущего сообщения нет (задача создана до запуска бриджа)
+8. `editPrevious` пропускается если предыдущего сообщения нет (задача создана до запуска бриджа); если есть — у прошлого сообщения снимаются кнопки-действия, а отслеживание переезжает на новое
 9. `threadReply` создаёт тред автоматически, повторные вызовы добавляют сообщения в тот же тред
 10. Кнопки `buttons` прикрепляются к основному сообщению, а не добавляются постфактум
 11. Шаблон по умолчанию (если `message` не указан): `[{{project}}] #{{seq}} «{{title}}» → {{state}} ({{priority}})`
@@ -933,6 +935,22 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 ```
 
 Действие возврата названо `rework`, а не `resume`, намеренно: `accept`/`resume` ещё и назначают нажавшего исполнителем, а тестировщик историю не делает.
+
+Третье правило — зеркало роллапа, и без него передача работает один раз: задача, вернувшаяся в работу, снимает историю с тестирования. Пока история висит в `Testing`, повторная сборка задач ничего не меняет, а событие без диффа по статусу карточку не отправляет — тестировщики так и не узнают, что история готова снова. `parentStatus` ограничивает правило именно этим случаем: обычное движение задач внутри ещё не переданной истории её статус не трогает.
+
+```json
+[
+  {
+    "from": "taiga:med2", "to": "taiga:med2-us",
+    "on": {
+      "entity": "task", "changed": "status",
+      "status": ["To do", "In Progress", "Pause", "Review"],
+      "parentStatus": "Testing",
+      "content": { "item": "{{parentId}}", "status": "In Progress", "comment": "↩️ {{identifier}} снова в работе" }
+    }
+  }
+]
+```
 
 ### Разные каналы для разных событий
 

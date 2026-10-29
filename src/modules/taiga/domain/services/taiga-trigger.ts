@@ -25,6 +25,11 @@ export interface TaigaTriggerFacts {
    */
   sprint: string;
   hasSprint: boolean;
+  /**
+   * Status of the parent user story — tasks only, empty for anything else. Taiga serializes a
+   * task's story in full inside the task payload, so this costs no API call.
+   */
+  parentStatus: string;
   hasAssignee: boolean;
   /**
    * The item just got its first assignee: created with one, or changed from an empty assignee.
@@ -72,6 +77,7 @@ export function extractTaigaFacts(payload: TaigaWebhookPayload): TaigaTriggerFac
     tags: normalizeTags(data.tags),
     sprint,
     hasSprint: Boolean(sprint),
+    parentStatus: data.user_story?.status?.name ?? "",
     hasAssignee,
     firstAssignment:
       (action === "create" && hasAssignee) ||
@@ -92,6 +98,7 @@ export function matchesTaigaCondition(on: RuleOn, facts: TaigaTriggerFacts): boo
   if (entities.length > 0 && !entities.includes(facts.entity)) return false;
 
   if (!matchesName(on.status, facts.status)) return false;
+  if (!matchesName(on.parentStatus, facts.parentStatus)) return false;
   if (!matchesName(on.type, facts.type)) return false;
   if (!matchesName(on.priority, facts.priority)) return false;
 
