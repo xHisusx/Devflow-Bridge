@@ -272,7 +272,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane:<alias>"` | Создать задачу в Plane-провайдере `<alias>` (workspace/project из провайдера). Работает и в intake-, и в webhook-пайплайнах (последнее = mirror/escalate: создать задачу по событию). Использует тот же путь создания, что и intake. |
-| `"taiga:<alias>"` | Создать item в Taiga-провайдере `<alias>` (issue / user story / task — тип задаётся полем `entity` провайдера, по умолчанию `issue`). Если в `content` есть `item` — не создать, а **обновить** существующий item (`customFields`, `status`, `assigneeEmail`, `comment`). Работает и в intake-, и в webhook-пайплайнах. Attachments не поддерживаются. |
+| `"taiga:<alias>"` | Создать item в Taiga-провайдере `<alias>` (issue / user story / task — тип задаётся полем `entity` провайдера, по умолчанию `issue`). Если в `content` есть `item` — не создать, а **обновить** существующий item (`customFields`, `status`, `assigneeEmail`, `comment`); кастомное поле, чей шаблон разрешился в пустую строку, остаётся как было (автоматическая запись не стирает данные). Работает и в intake-, и в webhook-пайплайнах. Attachments не поддерживаются. |
 | `"gitlab:<alias>"` | Операции в репозитории GitLab-провайдера `<alias>`: `branch` (создать/переиспользовать), `mr` (создать/переиспользовать draft MR), `issue`, `comment` (нота к MR) |
 | `"bitrix:<alias>"` | Проставить статус обращения Bitrix (`Closed` / `Rejected`). Id обращения берётся из описания задачи (`**BitrixID:** 12345`), а не из `content`; без него шаг пропускается с warning |
 | `"pachka:<channel>"` | Уведомить в Пачку, channel = alias `pachka`-провайдера. У провайдера с `"dm": true` — в ЛС получателю из `content.recipient` (рабочая почта или user id) |
@@ -417,7 +417,7 @@ Id обращения в `content` не передаётся — шаг чита
 5. Имена действий свободные — семантика фиксирована только для `accept`/`resume` (назначение исполнителя), остальные просто меняют статус.
 6. `feedback.statusLabels` — отображаемые имена статусов для сообщений (`"In progress": "В процессе 🚀"`).
 7. Outputs taiga-шага включают `status` (label), `assignee`, `type` (тип issue из Taiga: «Ошибка», «Вопрос»...) — можно использовать в шаблоне уведомления для «живой карточки».
-8. При переходе статуса (клик по кнопке или вебхук Taiga) текст сообщения **перерисовывается** по шаблону `content.message` того же правила `taiga:<alias> → pachka:<target>` со свежими `{{status}}`/`{{assignee}}`/`{{type}}`; если шаблон не найден — текст сохраняется, меняются только кнопки.
+8. При переходе статуса (клик по кнопке или вебхук Taiga) текст сообщения **перерисовывается** по шаблону `content.message` со свежими `{{status}}`/`{{assignee}}`/`{{type}}`. Шаблон ищется у правила `taiga:<alias> → pachka:<target>`, а если такого нет — у шага `… → pachka:<target>` пайплайна, который запускает этот же taiga-провайдер (так перерисовывается ЛС, отправленное шагом `from: gitlab:*`). В шаблоне доступны `task*` (`taskProject`, `taskIdentifier`, `taskName`, `taskUrl`, `taskStatus`) и `repo`/`branch`/`mrUrl` из связи «ветка/MR → задача»; если шаблон не найден — текст сохраняется, меняются только кнопки.
 
 ### Вебхук Taiga → синхронизация кнопок
 
@@ -616,7 +616,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 | `taiga:<alias>` (триггер, первый шаг webhook-пайплайна) | `action`, `entity`, `issueId`, `issueUrl`, `seq`, `identifier`, `name`, `title`, `description`, `project`, `status`, `statusFrom`, `type`, `priority`, `labels`, `assignee`, `assigneeEmail`, `assigneeUsername`, `assigneeInitials`, `slug`, `author`, `changedFields`, `sprint`, `parentId`, `parentSeq`, `parentIdentifier`, `parentName`, `parentUrl`, `receivedAt` |
 | `taiga:<alias>` (результат шага, `to: taiga:*`) | `issueId`, `issueUrl`, `seq` (ref), `identifier` (`#ref`), `name`, `title`, `description`, `labels`, `project`, `action`, `status`, `assignee`, `type`, `priority` |
 | `gitlab:<alias>` (триггер, первый шаг webhook-пайплайна) | `event`, `action`, `state`, `repo`, `repoUrl`, `branch`, `target`, `mrIid`, `mrUrl`, `mrTitle`, `draft`, `merged`, `labels`, `author`, `authorEmail`, `commits`, `lastCommit`, `sha`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `receivedAt` |
-| `gitlab:<alias>` (результат шага, `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier` |
+| `gitlab:<alias>` (результат шага, `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `taskProject`, `taskStatus` |
 | `bitrix:<alias>` (результат шага, `to: bitrix:*`) | `bitrixId`, `status`, `resolution`, `response`, `provider` |
 | `pachka:<alias>` | `messageId`, `chatId`, `channel`, `message` |
 | `webhook:<alias>` | `channel`, `message` |
@@ -624,7 +624,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 
 > `plane` и `taiga` играют две роли. Когда провайдер — **источник-триггер** (первый шаг, `from: plane:*` / `from: taiga:*` в webhook-пайплайне) — доступны поля события (`state`/`status`, `priority`, `assignee`, `changedFields`...). Когда он **результат шага** (`to: plane:*` / `to: taiga:*` → следующий `from:` того же ref) — доступны поля записанной задачи (`name`, `description`, `labels`...).
 
-> У `gitlab`-шага `issueId`/`issueUrl` относятся к **issue в GitLab**; исходная задача трекера прокидывается как `taskId`, `taskName`, `taskUrl`, `taskIdentifier`. Внутри своего `content` gitlab-шаг дополнительно видит вычисляемые переменные (`GITLAB_COMPUTED_VARS`): `slug`, `assigneeInitials`, `assignee`, `assigneeEmail`, `repo`, `repoUrl`, `task*`.
+> У `gitlab`-шага `issueId`/`issueUrl` относятся к **issue в GitLab**; исходная задача трекера прокидывается как `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `taskProject` (имя проекта в трекере) и `taskStatus` (её статус на момент события). Внутри своего `content` gitlab-шаг дополнительно видит вычисляемые переменные (`GITLAB_COMPUTED_VARS`): `slug`, `assigneeInitials`, `assignee`, `assigneeEmail`, `repo`, `repoUrl`, `task*`.
 
 Пример с явной декларацией:
 ```json
@@ -866,7 +866,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
           "once": true,
           "content": {
             "recipient": "{{assigneeEmail}}",
-            "message": "🆕 Вам назначена [{{taskIdentifier}} {{taskName}}]({{taskUrl}})\nВетка: `{{branch}}`",
+            "message": "🆕 **[{{taskProject}}]** Вам назначена [{{taskIdentifier}} {{taskName}}]({{taskUrl}})\nСтатус: {{taskStatus}}\nВетка: `{{branch}}`",
             "actions": [{ "type": "buttons", "buttons": [
               { "text": "🔀 MR", "url": "{{mrUrl}}" },
               { "text": "👍 Взять в работу", "callbackData": "taiga:dev:accept:{{taskId}}" }
