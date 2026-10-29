@@ -266,7 +266,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane"` | Plane (через webhook) |
-| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story), `allTasks` (все задачи user story события — у task родительской, у user story её самой — в перечисленных статусах; стоит запрос к API, поэтому проверяется последним, а история без задач не проходит никогда) |
+| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story), `allTasks` (все задачи user story события — у task родительской, у user story её самой — в перечисленных статусах; стоит запрос к API, поэтому проверяется последним, а история без задач не проходит никогда), `parentStatus` (статус родительской user story события-задачи; приходит в payload, поэтому бесплатен — у событий других сущностей пуст, так что правило с этим условием на них не срабатывает) |
 | `"gitlab:<alias>"` | Вебхук GitLab: событие репозитория (MR открыт/смержен/закрыт, push). Условия: `event`, `action`, `state`, `target`, `branch`, `draft`, `labels` |
 | `"api:intake"` | API endpoint `/api/plane/intake-issues` |
 | `"form:<alias>"` | Отправка формы Пачки (модального представления) провайдера `form:<alias>` |
@@ -935,6 +935,22 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 ```
 
 Действие возврата названо `rework`, а не `resume`, намеренно: `accept`/`resume` ещё и назначают нажавшего исполнителем, а тестировщик историю не делает.
+
+Третье правило — зеркало роллапа, и без него передача работает один раз: задача, вернувшаяся в работу, снимает историю с тестирования. Пока история висит в `Testing`, повторная сборка задач ничего не меняет, а событие без диффа по статусу карточку не отправляет — тестировщики так и не узнают, что история готова снова. `parentStatus` ограничивает правило именно этим случаем: обычное движение задач внутри ещё не переданной истории её статус не трогает.
+
+```json
+[
+  {
+    "from": "taiga:med2", "to": "taiga:med2-us",
+    "on": {
+      "entity": "task", "changed": "status",
+      "status": ["To do", "In Progress", "Pause", "Review"],
+      "parentStatus": "Testing",
+      "content": { "item": "{{parentId}}", "status": "In Progress", "comment": "↩️ {{identifier}} снова в работе" }
+    }
+  }
+]
+```
 
 ### Разные каналы для разных событий
 

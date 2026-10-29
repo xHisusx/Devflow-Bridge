@@ -138,6 +138,15 @@ export interface RuleOn {
    */
   allTasks?: string | string[];
   /**
+   * Status of the parent user story of a task event (empty for any other entity, so a rule naming
+   * it never fires on a story or an issue). It comes with the payload — Taiga serializes a task's
+   * story in full — so unlike `allTasks` it costs nothing.
+   *
+   * This is what makes the roll-up reversible: a task going back into work concerns the story only
+   * while the story is already handed over for testing, and must not rewrite its status otherwise.
+   */
+  parentStatus?: string | string[];
+  /**
    * Assignment filter:
    * - "first" — the item just got its first assignee (created with one, or changed from empty)
    * - "any" — an assignee is set
