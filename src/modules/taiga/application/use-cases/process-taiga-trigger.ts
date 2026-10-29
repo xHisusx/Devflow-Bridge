@@ -113,6 +113,22 @@ export class ProcessTaigaTriggerUseCase {
       }
     }
 
+    // A condition that does not match skips its pipeline in silence, which leaves "nothing
+    // happened" indistinguishable from "nothing was configured". So an event that started nothing
+    // reports what it looked like: these are exactly the values the conditions are compared with.
+    if (triggered === 0) {
+      log.debug("Taiga trigger: no pipeline matched", {
+        entity: facts.entity,
+        action: facts.action,
+        status: facts.status,
+        changed: facts.changedFields,
+        tags: facts.tags,
+        sprint: facts.sprint,
+        assigned: facts.hasAssignee,
+        firstAssignment: facts.firstAssignment,
+      });
+    }
+
     return { ok: true, triggered };
   }
 
