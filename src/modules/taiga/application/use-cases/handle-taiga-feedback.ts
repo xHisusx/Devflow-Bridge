@@ -6,10 +6,11 @@ import type { IMessageStore } from "../../../messenger/application/ports/message
 import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
 import {
   buildFeedbackButtons,
+  buttonsForStatus,
   keepLinkButtons,
   TAIGA_CALLBACK_PREFIX,
 } from "../../domain/services/feedback-buttons";
-import { findNotifyTemplate, buildItemVars, withCardVars } from "../services/feedback-message";
+import { findNotifyContent, buildItemVars, withCardVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
 import {
   DEFAULT_WORK_EMAIL_FIELD,
@@ -103,7 +104,7 @@ export class HandleTaigaFeedbackUseCase {
     );
     log.info("Taiga feedback applied", { entity, itemId, action, status: statusName, assignedTo });
 
-    await this.refreshMessage(input, provider, client, project, itemId, feedback.buttons?.[statusName] ?? []);
+    await this.refreshMessage(input, provider, client, project, itemId, statusName);
 
     return { ok: true, status: statusName };
   }
@@ -133,9 +134,10 @@ export class HandleTaigaFeedbackUseCase {
   }
 
   /**
-   * Re-render the tracked message after the transition: content from the pipeline rule's
-   * message template (with fresh status/assignee), buttons per the next-status set
-   * (empty set clears them). Falls back to keeping the old content when no template is found.
+   * Re-render the clicked message after the transition: content from the pipeline rule's message
+   * template (with fresh status/assignee), buttons per the set that rule declares for the new
+   * status — or, with none declared, the provider-wide one. Falls back to keeping the old content
+   * when no template is found.
    */
   private async refreshMessage(
     input: TaigaFeedbackInput,
@@ -143,30 +145,35 @@ export class HandleTaigaFeedbackUseCase {
     client: ITaigaApiClient,
     project: TaigaProjectInfo,
     itemId: number,
-    nextButtons: { text: string; action: string }[],
+    statusName: string,
   ): Promise<void> {
     if (!input.messageId || !this.messengerClient) return;
     try {
       // The message is read either way: its link buttons outlive the transition, and without a
       // template its text is kept as it is.
       const current = await this.messengerClient.getMessage(input.messageId);
+
+      const target = this.messageStore?.getByPachkaMessageId(input.messageId)?.target;
+      const notify = this.config && target
+        ? findNotifyContent(this.config, `taiga:${provider.alias}`, target)
+        : null;
       const buttons = [
         ...keepLinkButtons(current.buttons),
-        ...buildFeedbackButtons(provider.alias, itemId, nextButtons),
+        ...buildFeedbackButtons(
+          provider.alias,
+          itemId,
+          buttonsForStatus(notify?.buttonsByStatus ?? provider.feedback?.buttons, statusName),
+        ),
       ];
 
       let content: string | null = null;
-      const target = this.messageStore?.getByPachkaMessageId(input.messageId)?.target;
-      const template = this.config && target
-        ? findNotifyTemplate(this.config, `taiga:${provider.alias}`, target)
-        : null;
-      if (template) {
+      if (notify?.message) {
         const vars = withCardVars(
           await buildItemVars(client, provider, project, itemId),
           this.pipelineState,
           `taiga:${provider.alias}`,
         );
-        content = renderMessage(template, vars);
+        content = renderMessage(notify.message, vars);
       } else {
         content = current.content;
       }

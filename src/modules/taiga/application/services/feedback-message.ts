@@ -1,31 +1,32 @@
 import type { Config, TaigaProvider } from "../../../../core/config";
 import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
-import { isNotifyContent } from "../../../messenger/domain/entities/notification";
+import { isNotifyContent, type NotifyContent } from "../../../messenger/domain/entities/notification";
 import type { ITaigaApiClient, TaigaProjectInfo } from "../ports/taiga-api.port";
 import { statusLabel, buildItemUrl } from "../../domain/services/feedback-buttons";
 import { log } from "../../../../core/logger";
 
 /**
- * Find the notify message template of the pipeline rule taiga:<alias> -> pachka:<target>.
- * Reused to re-render the tracked message when the item's status/assignee changes,
- * so the card format lives in one place (the rule's content.message).
+ * Find the notify content of the pipeline rule taiga:<alias> -> pachka:<target>: the message
+ * template and the per-status buttons of that card. Reused to re-render the tracked message when
+ * the item's status/assignee changes, so a card's format and its actions live in one place —
+ * the rule that sent it.
  *
  * The card is not always sent by a Taiga step: in the "task assigned -> branch + draft MR -> DM"
  * flow the message comes from a `from: gitlab:*` step of a pipeline that a Taiga event triggered.
  * So when no rule notifies that target directly, the pipelines this provider triggers are searched
  * for the step that does — a card is re-rendered by the template that produced it either way.
  */
-export function findNotifyTemplate(
+export function findNotifyContent(
   config: Config,
   taigaRef: string,
   pachkaAlias: string,
-): string | null {
+): NotifyContent | null {
   const target = `pachka:${pachkaAlias}`;
 
   for (const pipeline of config.rules) {
     for (const rule of pipeline) {
       if (rule.from !== taigaRef || rule.to !== target) continue;
-      if (isNotifyContent(rule.on.content) && rule.on.content.message) return rule.on.content.message;
+      if (isNotifyContent(rule.on.content) && rule.on.content.message) return rule.on.content;
     }
   }
 
@@ -33,7 +34,7 @@ export function findNotifyTemplate(
     if (pipeline[0]?.from !== taigaRef) continue;
     for (const rule of pipeline) {
       if (rule.to !== target) continue;
-      if (isNotifyContent(rule.on.content) && rule.on.content.message) return rule.on.content.message;
+      if (isNotifyContent(rule.on.content) && rule.on.content.message) return rule.on.content;
     }
   }
 

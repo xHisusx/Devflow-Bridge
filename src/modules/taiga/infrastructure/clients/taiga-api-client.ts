@@ -11,6 +11,7 @@ import type {
   TaigaItemPatch,
   TaigaProjectInfo,
   TaigaStatusInfo,
+  TaigaTaskSummary,
 } from "../../application/ports/taiga-api.port";
 
 /** URL segments of the custom-attribute endpoints, which differ from the resource names. */
@@ -123,6 +124,17 @@ export class TaigaApiClient implements ITaigaApiClient {
     const data = await this.resource(entity).filtersData({ project: projectId });
     const statuses = (data.statuses ?? []) as Array<{ id: number; name: string }>;
     return statuses.map((s) => ({ id: s.id, name: s.name }));
+  }
+
+  async getTasksOfUserStory(userStoryId: number): Promise<TaigaTaskSummary[]> {
+    const tasks = await this.sdk.tasks.list({ user_story: userStoryId });
+    return (tasks ?? []).map((t) => ({
+      id: t.id,
+      ref: t.ref,
+      subject: t.subject,
+      status: t.status,
+      isClosed: t.is_closed,
+    }));
   }
 
   async getIssueTypes(projectId: number): Promise<TaigaStatusInfo[]> {

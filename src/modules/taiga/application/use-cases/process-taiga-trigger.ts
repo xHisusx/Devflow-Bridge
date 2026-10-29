@@ -4,6 +4,8 @@ import type { Rule } from "../../../messenger/domain/entities/notification";
 import type { ITaigaApiClient } from "../ports/taiga-api.port";
 import type { TaigaWebhookPayload } from "../../domain/entities/taiga-webhook-payload";
 import { parseRef } from "../../../messenger/domain/entities/notification";
+import { asArray } from "../../../plane/domain/services/rule-matcher";
+import { storyTaskProgress } from "../services/story-progress";
 import { Deduplicator } from "../../../plane/domain/services/deduplicator";
 import { formatReceivedAt } from "../../../plane/application/use-cases/process-intake-pipeline";
 import { buildItemUrl, statusLabel } from "../../domain/services/feedback-buttons";
@@ -72,6 +74,16 @@ export class ProcessTaigaTriggerUseCase {
       // issue-provider does not fire on user-story events of the same project.
       if (!trigger.on.entity && (provider.entity ?? "issue") !== facts.entity) continue;
       if (!matchesTaigaCondition(trigger.on, facts)) continue;
+
+      // Rolling a story up is a question about the event's *siblings*, so it costs an API call:
+      // asked only once the cheap conditions have matched, and before the dedup key is claimed —
+      // a task that was not the last one must not keep the story from rolling up on a later event.
+      if (
+        trigger.on.allTasks &&
+        !(await this.storyIsComplete(provider, payload, facts, trigger.on.allTasks))
+      ) {
+        continue;
+      }
 
       const dedupKey = [
         index, trigger.from, itemId, facts.action, facts.status,
@@ -156,6 +168,58 @@ export class ProcessTaigaTriggerUseCase {
         (parent?.ref != null ? buildItemUrl(provider, projectSlug, parent.ref, "user_story") : ""),
       receivedAt: formatReceivedAt(new Date()),
     });
+  }
+
+  /**
+   * The `on.allTasks` gate: every task of the story this event is about sits in one of the named
+   * statuses. A task event asks about its parent story, a story event about itself; an item with
+   * no story (a standalone task, an issue) never passes.
+   */
+  private async storyIsComplete(
+    provider: TaigaProvider,
+    payload: TaigaWebhookPayload,
+    facts: TaigaTriggerFacts,
+    statuses: string | string[],
+  ): Promise<boolean> {
+    const storyId =
+      facts.entity === "task"
+        ? payload.data?.user_story?.id
+        : facts.entity === "user_story"
+          ? payload.data?.id
+          : undefined;
+    if (!storyId) {
+      log.debug("Taiga trigger: event has no user story to roll up", { entity: facts.entity });
+      return false;
+    }
+
+    const ref = `taiga:${provider.alias}`;
+    const client = this.taigaClients.get(ref);
+    if (!client) {
+      log.warn(`Taiga trigger: no API client for "${ref}" — "allTasks" cannot be checked`);
+      return false;
+    }
+
+    try {
+      const projectId =
+        payload.data?.project?.id ?? (await client.getProjectBySlug(provider.project)).id;
+      const progress = await storyTaskProgress(
+        client,
+        projectId,
+        storyId,
+        asArray(statuses).map(String),
+      );
+      log.info(
+        `Taiga trigger: user story ${storyId} is ${progress.done}/${progress.total} done`,
+        { complete: progress.complete },
+      );
+      return progress.complete;
+    } catch (e) {
+      log.error("Taiga trigger: failed to read the story's tasks", {
+        storyId,
+        error: String(e),
+      });
+      return false;
+    }
   }
 
   /** Taiga user id -> member email via the project's memberships (cached per project). */

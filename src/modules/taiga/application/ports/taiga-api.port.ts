@@ -62,6 +62,16 @@ export interface TaigaItemPatch {
   comment?: string;
 }
 
+/** One task of a user story, as the story's progress is judged by. */
+export interface TaigaTaskSummary {
+  id: number;
+  ref: number;
+  subject: string;
+  /** Status id; the names live in the project (see getItemStatuses). */
+  status: number;
+  isClosed: boolean;
+}
+
 /** A project's custom field definition ("MR", "Ветка"). */
 export interface TaigaCustomAttribute {
   id: number;
@@ -79,6 +89,11 @@ export interface ITaigaApiClient {
   createItem(entity: TaigaEntity, payload: TaigaCreatePayload): Promise<TaigaCreatedItem>;
   getItem(entity: TaigaEntity, id: number): Promise<TaigaItemInfo>;
   getItemStatuses(entity: TaigaEntity, projectId: number): Promise<TaigaStatusInfo[]>;
+  /**
+   * Tasks belonging to a user story. A story's work is split across its tasks, so this is what
+   * answers "is everything under this story finished" — a question no single event can answer.
+   */
+  getTasksOfUserStory(userStoryId: number): Promise<TaigaTaskSummary[]>;
   /** Issue types of the project (issues only; "Ошибка", "Вопрос", ...). */
   getIssueTypes(projectId: number): Promise<TaigaStatusInfo[]>;
   /** Issue priorities of the project (issues only; "Low", "Normal", ...). */

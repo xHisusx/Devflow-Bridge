@@ -5,12 +5,13 @@ import type { IMessageStore } from "../../../messenger/application/ports/message
 import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
 import {
   buildFeedbackButtons,
+  buttonsForStatus,
   keepLinkButtons,
   statusLabel,
   buildItemUrl,
 } from "../../domain/services/feedback-buttons";
-import { extractProjectSlug } from "../../domain/services/taiga-trigger";
-import { findNotifyTemplate, withCardVars } from "../services/feedback-message";
+import { extractProjectSlug, normalizeTaigaEntity } from "../../domain/services/taiga-trigger";
+import { findNotifyContent, withCardVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
 import type { TaigaWebhookPayload } from "../../domain/entities/taiga-webhook-payload";
 import { log } from "../../../../core/logger";
@@ -60,14 +61,16 @@ export class ProcessTaigaWebhookUseCase {
     }
 
     const slug = extractProjectSlug(payload.data?.project?.permalink);
+    const entity = normalizeTaigaEntity(payload.type);
     let updated = 0;
 
     for (const provider of this.registry.getByType("taiga") as TaigaProvider[]) {
       if (!provider.feedback || (slug && provider.project !== slug)) continue;
+      // One project can be served by two providers — its tasks and its user stories — and a card
+      // is the business of the one whose entity the event is about. Without this the other would
+      // rewrite it with the buttons of a different kind of item.
+      if ((provider.entity ?? "issue") !== entity) continue;
 
-      const buttonsMap = provider.feedback.buttons ?? {};
-      const key = Object.keys(buttonsMap).find((k) => k.toLowerCase() === statusName.toLowerCase());
-      const nextButtons = buildFeedbackButtons(provider.alias, itemId, key ? buttonsMap[key] : []);
       const vars = withCardVars(
         this.buildVars(provider, payload, itemId, statusName),
         this.pipelineState,
@@ -78,13 +81,22 @@ export class ProcessTaigaWebhookUseCase {
         const messageId = this.messageStore.get(String(itemId), pachka.alias);
         if (!messageId) continue;
         try {
-          const template = this.config
-            ? findNotifyTemplate(this.config, `taiga:${provider.alias}`, pachka.alias)
+          const notify = this.config
+            ? findNotifyContent(this.config, `taiga:${provider.alias}`, pachka.alias)
             : null;
           // Read either way: the message's link buttons survive the transition (see keepLinkButtons).
           const current = await this.messengerClient.getMessage(messageId);
-          const content = template ? renderMessage(template, vars) : current.content;
-          const buttons = [...keepLinkButtons(current.buttons), ...nextButtons];
+          const content = notify?.message ? renderMessage(notify.message, vars) : current.content;
+          // What can be done from a card is the business of the step that sent it (a tester
+          // returns or finishes the task; the developer waits) — hence the per-step set first.
+          const buttons = [
+            ...keepLinkButtons(current.buttons),
+            ...buildFeedbackButtons(
+              provider.alias,
+              itemId,
+              buttonsForStatus(notify?.buttonsByStatus ?? provider.feedback.buttons, statusName),
+            ),
+          ];
           await this.messengerClient.editMessage(messageId, content, { buttons });
           updated++;
           log.info("Taiga webhook: message synced", {

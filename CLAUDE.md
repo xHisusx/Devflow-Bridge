@@ -80,6 +80,7 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 - `application/ports/taiga-api.port.ts` — интерфейс `ITaigaApiClient`
 - `application/services/create-taiga-issue.ts` — `createTaigaIssueFromContent()`, `TaigaWriteError` (создание item + сборка outputs)
 - `application/services/update-taiga-item.ts` — `updateTaigaItemFromContent()` (обновление: кастомные поля, статус, исполнитель, комментарий; неизвестное поле — warning, не ошибка)
+- `application/services/story-progress.ts` — `storyTaskProgress()` (сколько задач user story в нужных статусах; история без задач не считается готовой)
 - `application/use-cases/process-taiga-trigger.ts` — `ProcessTaigaTriggerUseCase` (вебхук Taiga как триггер пайплайна, резолв email исполнителя через memberships)
 - `application/use-cases/process-taiga-webhook.ts` — `ProcessTaigaWebhookUseCase` (синхронизация карточки в Пачке)
 - `infrastructure/clients/taiga-api-client.ts` — `TaigaApiClient` (адаптер над npm-библиотекой `taiga-api-client`; кастомные атрибуты — через `sdk.http`)
@@ -142,7 +143,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 - `tests/mocks.ts` — общие моки портов (`messengerClientMock`, `taigaClientMock`, `gitlabClientMock`, `bitrixClientMock`, `messageStoreMock`, `pipelineStateMock`, `pachkaMessage`)
 - `tests/unit/core/` — тесты core (logger, slug, provider-schema drift guards)
 - `tests/unit/plane/` — тесты plane domain (rule-matcher, template-renderer)
-- `tests/unit/taiga/` — тесты taiga (триггер, feedback, создание/обновление item)
+- `tests/unit/taiga/` — тесты taiga (триггер, feedback, создание/обновление item, роллап user story и карточка тестировщиков в `story-rollup.test.ts`)
 - `tests/unit/gitlab/` — тесты gitlab-шага, триггера, резолва пользователей и сквозные сценарии «назначение → ветка + MR + ЛС» и «MR влит → статус в Taiga»
 - `tests/unit/bitrix/` — тесты bitrix (разбор BitrixID, шаг `to: bitrix:*`, сквозной сценарий «закрытие в Taiga → статус обращения» через `createApp`)
 - `tests/unit/messenger/` — тесты messenger (message-store, формы, ЛС)
@@ -263,7 +264,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane"` | Plane (через webhook) |
-| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story) |
+| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story), `allTasks` (все задачи user story события — у task родительской, у user story её самой — в перечисленных статусах; стоит запрос к API, поэтому проверяется последним, а история без задач не проходит никогда) |
 | `"gitlab:<alias>"` | Вебхук GitLab: событие репозитория (MR открыт/смержен/закрыт, push). Условия: `event`, `action`, `state`, `target`, `branch`, `draft`, `labels` |
 | `"api:intake"` | API endpoint `/api/plane/intake-issues` |
 | `"form:<alias>"` | Отправка формы Пачки (модального представления) провайдера `form:<alias>` |
@@ -413,7 +414,7 @@ Id обращения в `content` не передаётся — шаг чита
 1. Стартовая кнопка задаётся в notify-шаге пайплайна: `{ "text": "👍 Взять в работу", "callbackData": "taiga:<alias>:accept:{{issueId}}" }`. Формат callbackData: `taiga:<alias>:<action>:<itemId>`.
 2. Нажатие прилетает в `POST /webhook/pachka` (исходящий webhook Пачки должен указывать на этот роут) и обрабатывается `HandleTaigaFeedbackUseCase` (`src/modules/taiga/application/use-cases/handle-taiga-feedback.ts`).
 3. Действия `accept` и `resume` дополнительно назначают исполнителя: у нажавшего берётся email из кастомного поля `workEmailField` (fallback — email профиля), участник проекта Taiga ищется по `user_email` (связь пользователей по email, не по id).
-4. После перехода кнопки-действия заменяются набором из `feedback.buttons` для нового статуса (кнопки-ссылки сообщение сохраняет); статус ищется среди статусов проекта по имени.
+4. После перехода кнопки-действия заменяются набором для нового статуса (нет ключа = кнопки убираются, кнопки-ссылки сообщение сохраняет); статус ищется среди статусов проекта по имени. Набор берётся из `content.buttonsByStatus` того notify-шага, который отправил эту карточку, а если шаг его не объявил — из `feedback.buttons` провайдера. Это нужно, когда один item показан в нескольких местах сразу: в канале тестировщиков у карточки свои действия, в ЛС разработчика — свои.
 5. Имена действий свободные — семантика фиксирована только для `accept`/`resume` (назначение исполнителя), остальные просто меняют статус.
 6. `feedback.statusLabels` — отображаемые имена статусов для сообщений (`"In progress": "В процессе 🚀"`).
 7. Outputs taiga-шага включают `status` (label), `assignee`, `type` (тип issue из Taiga: «Ошибка», «Вопрос»...) — можно использовать в шаблоне уведомления для «живой карточки».
@@ -427,7 +428,7 @@ Id обращения в `content` не передаётся — шаг чита
 - **URL**: `https://<хост-сервиса>/webhook/taiga`
 - **Secret key**: произвольная строка; та же строка должна быть в env `TAIGA_WEBHOOK_SECRET`. Подпись — HMAC-SHA1 от raw body в заголовке `X-TAIGA-WEBHOOK-SIGNATURE`; при пустом `TAIGA_WEBHOOK_SECRET` подпись не проверяется.
 
-Провайдер события определяется по slug проекта из `data.project.permalink`; тестовый пинг Taiga (`action: "test"`) отвечает `200 ok`.
+Провайдер события определяется по slug проекта из `data.project.permalink` и по `entity` (один проект бывает подключён двумя провайдерами — задачи и user story, — и карточка относится к тому, чья сущность совпала с сущностью события); тестовый пинг Taiga (`action: "test"`) отвечает `200 ok`.
 
 Синхронизация сообщения (`ProcessTaigaWebhookUseCase`) и запуск пайплайнов (`ProcessTaigaTriggerUseCase`) — две независимые ветки одного роута: одно событие может и перерисовать карточку, и запустить пайплайн, и падение одной не скрывает другую. Ответ: `{ "ok": true, "updated": <сообщений>, "triggered": <пайплайнов> }`. Всё, что запускается событием Taiga (в том числе `to: bitrix:*`), идёт через триггер и общий движок пайплайнов, а не отдельным путём.
 
@@ -887,6 +888,51 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
   ]
 }
 ```
+
+### Все задачи истории готовы → user story в тестирование
+
+Передача задачи в тестирование означает «моя часть сделана», а e2e-тестировать user story есть смысл только когда готова последняя её задача. Поэтому задачи переводятся в `Ready for Test` (прогресс виден в Taiga), последняя из них переводит саму историю в `Testing`, и уже это событие уходит карточкой в канал тестировщиков. Нужны два провайдера на один проект: `entity: "task"` и `entity: "user_story"` — у них разные наборы статусов. Полная версия с пояснениями — в [docs/configuration.md](docs/configuration.md).
+
+```json
+[
+  {
+    "from": "taiga:med2", "to": "taiga:med2-us",
+    "on": {
+      "entity": "task", "changed": "status", "status": "Ready for Test",
+      "allTasks": ["Ready for Test", "Done"],
+      "content": { "item": "{{parentId}}", "status": "Testing", "comment": "🧪 Все задачи готовы" }
+    }
+  }
+]
+```
+
+```json
+[
+  {
+    "from": "taiga:med2-us", "to": "pachka:med2-testing",
+    "on": {
+      "changed": "status", "status": "Testing",
+      "content": {
+        "message": "🧪 **Готово к тестированию**\n[{{identifier}} {{name}}]({{issueUrl}})\n🦸‍♂️ {{assignee}} · 📋 {{status}}",
+        "actions": [{ "type": "buttons", "buttons": [
+          { "text": "🌐 Перейти на сайт", "url": "https://app.example.com" },
+          { "text": "↩️ Вернуть в работу", "callbackData": "taiga:med2-us:rework:{{issueId}}" },
+          { "text": "✅ Завершить", "callbackData": "taiga:med2-us:close:{{issueId}}" }
+        ]}],
+        "buttonsByStatus": {
+          "Testing": [
+            { "text": "↩️ Вернуть в работу", "action": "rework" },
+            { "text": "✅ Завершить", "action": "close" }
+          ],
+          "Done": [{ "text": "↩️ Вернуть в работу", "action": "rework" }]
+        }
+      }
+    }
+  }
+]
+```
+
+Действие возврата названо `rework`, а не `resume`, намеренно: `accept`/`resume` ещё и назначают нажавшего исполнителем, а тестировщик историю не делает.
 
 ### Разные каналы для разных событий
 
