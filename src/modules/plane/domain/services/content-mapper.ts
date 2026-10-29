@@ -50,18 +50,34 @@ export function resolve(spec: unknown, source: Record<string, unknown>): unknown
   }
   if (typeof spec !== "string") return spec;
 
-  if (spec.includes("{{#")) spec = renderConditionals(spec, source);
+  const template = spec.includes("{{#") ? renderConditionals(spec, source) : spec;
 
-  const fullMatch = spec.match(/^\{\{([\w.]+)\}\}$/);
+  const fullMatch = template.match(/^\{\{([\w.]+)\}\}$/);
   if (fullMatch) return getByPath(source, fullMatch[1]);
 
-  if (spec.includes("{{")) {
-    return spec.replace(/\{\{([\w.]+)\}\}/g, (_, path) => {
+  if (template.includes("{{")) {
+    return template.replace(/\{\{([\w.]+)\}\}/g, (_match, path: string) => {
       const v = getByPath(source, path);
       return v == null ? "" : String(v);
     });
   }
 
+  return template;
+}
+
+/**
+ * Like {@link resolve}, but also walks plain objects, so nested content blocks (such as a gitlab
+ * step's `mr: { title, description }`) get their templates resolved too.
+ */
+export function resolveDeep(spec: unknown, source: Record<string, unknown>): unknown {
+  if (typeof spec === "string" || Array.isArray(spec)) return resolve(spec, source);
+  if (spec && typeof spec === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(spec as Record<string, unknown>)) {
+      out[key] = resolveDeep(value, source);
+    }
+    return out;
+  }
   return spec;
 }
 
@@ -71,7 +87,8 @@ export function mapContent(
 ): MappedContent {
   const result: MappedContent = {};
   for (const [field, spec] of Object.entries(mapping)) {
-    result[field] = resolve(spec, source);
+    // Deep: a field's value may be a nested block (e.g. taiga's `customFields`).
+    result[field] = resolveDeep(spec, source);
   }
   return result;
 }

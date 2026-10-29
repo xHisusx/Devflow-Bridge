@@ -19,7 +19,8 @@ export function matchesCondition(
   if (entities.length > 0 && !entities.includes(entity as any)) return false;
 
   // Normalize: webhook sends "created"/"updated"/"deleted", rules use "create"/"update"/"delete"
-  if (cond.action && action.replace(/d$/, "") !== cond.action) return false;
+  const actions = asArray(cond.action);
+  if (actions.length > 0 && !actions.includes(action.replace(/d$/, ""))) return false;
 
   const states = asArray(cond.state);
   const groups = asArray(cond.stateGroup);

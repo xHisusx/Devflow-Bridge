@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { type Rule, parseRef, isNotifyContent } from "../modules/messenger/domain/entities/notification";
 import { FORM_INTERACTIVE_TYPES, type FormBlock } from "../modules/messenger/domain/entities/form";
-import { getProviderOutputs } from "./provider-schema";
+import { GITLAB_COMPUTED_VARS, getProviderOutputs } from "./provider-schema";
 
 // ── Provider types ──
 
@@ -16,7 +16,18 @@ export interface PlaneProvider {
 export interface PachkaProvider {
   type: "pachka";
   alias: string;
-  chatId: number;
+  /** Target chat id. Required unless `dm` is set (a DM has no fixed chat). */
+  chatId?: number;
+  /**
+   * Direct-message mode: the step's `content.recipient` (an email or a numeric Pachka user id)
+   * selects the person, and the message lands in the bot's personal chat with them.
+   */
+  dm?: boolean;
+  /**
+   * Name of the Pachka custom profile field holding the work email, used to find the recipient
+   * of a DM. Default: "Рабочая почта". The profile email is the fallback.
+   */
+  workEmailField?: string;
 }
 
 export interface WebhookProvider {
@@ -88,6 +99,68 @@ export interface TaigaProvider {
   feedback?: TaigaFeedbackConfig;
 }
 
+// ── GitLab ──
+
+/** Explicit email -> GitLab identity mapping, used when the token cannot search by email. */
+export interface GitLabUserMapping {
+  username?: string;
+  userId?: number;
+  /** Branch-name initials override ("am"); derived from the assignee's name/email otherwise. */
+  initials?: string;
+}
+
+export interface GitLabBranchConfig {
+  /** Branch name template. Default: "{{branchType}}/{{assigneeInitials}}/{{slug}}". */
+  pattern?: string;
+  /** Maximum length of the `{{slug}}` part. Default: 60. */
+  maxSlugLength?: number;
+  /**
+   * Tag (or issue type name) -> branch type, matched case-insensitively against the item's tags
+   * first and then its type ("Bug" -> "fix"). First match wins; `{{branchType}}` is the result.
+   */
+  typeByTag?: Record<string, string>;
+  /** Branch type when no tag matches. Default: "feat". */
+  type?: string;
+}
+
+/** Defaults for merge requests opened by `to: gitlab:*` steps; each field is overridable per rule. */
+export interface GitLabMrConfig {
+  /** Target branch. Default: the provider's `defaultBranch`. */
+  target?: string;
+  /** Open as a draft (GitLab has no API flag — the title gets a "Draft: " prefix). Default: true. */
+  draft?: boolean;
+  /** Title template. Default: "{{taskIdentifier}} {{taskName}}". */
+  title?: string;
+  /** Description template. Default: a link to the source task. */
+  description?: string;
+  labels?: string[];
+  removeSourceBranch?: boolean;
+  squash?: boolean;
+}
+
+export interface GitLabProvider {
+  type: "gitlab";
+  alias: string;
+  /** Instance root, e.g. "https://git.example.com" (the /api/v4 prefix is added by the client). */
+  baseUrl: string;
+  /** Default repository: numeric id or path with namespace ("team/backend"). */
+  project: string;
+  /** Tag (Taiga tag / Plane label) -> repository path. First matching tag wins, else `project`. */
+  repoByTag?: Record<string, string>;
+  /** Branch new work branches and merge requests are based on. Default: "master". */
+  defaultBranch?: string;
+  branch?: GitLabBranchConfig;
+  mr?: GitLabMrConfig;
+  /** email -> GitLab identity. Checked before the API lookup (`GET /users?search=<email>`). */
+  userMap?: Record<string, GitLabUserMapping>;
+  /**
+   * Groups whose members are indexed to resolve an assignee ("team", "team/backend"). Needed when
+   * the token is not an admin one and so cannot search people by their private email; without it
+   * the members of the repository itself are indexed.
+   */
+  groups?: string[];
+}
+
 /**
  * Declarative Pachka modal form (view). The definition (title/blocks) can live inline or in an
  * external JSON file referenced by `file` (path relative to the config directory). File contents:
@@ -107,6 +180,8 @@ export interface FormProvider {
   blocks?: FormBlock[];
 }
 
+// ── Bitrix ──
+
 export type BitrixStatus = "Closed" | "Rejected";
 
 export interface BitrixProvider {
@@ -123,7 +198,15 @@ export interface BitrixContent {
   resolution?: string;
 }
 
-export type Provider = PlaneProvider | PachkaProvider | WebhookProvider | ApiProvider | TaigaProvider | FormProvider | BitrixProvider;
+export type Provider =
+  | PlaneProvider
+  | PachkaProvider
+  | WebhookProvider
+  | ApiProvider
+  | TaigaProvider
+  | GitLabProvider
+  | FormProvider
+  | BitrixProvider;
 
 // ── Config ──
 
@@ -186,6 +269,12 @@ export async function resolveFormProviders(config: Config, configDir: string): P
 
 // ── Validation ──
 
+/** Provider types that may start a pipeline (event sources, not step targets). */
+const TRIGGER_TYPES = new Set(["api", "plane", "taiga", "gitlab", "form"]);
+
+/** A `to: gitlab:*` step must ask for at least one of these operations. */
+const GITLAB_CONTENT_KEYS = ["branch", "mr", "issue", "comment"];
+
 export function validateConfig(
   config: Config,
   registry: { get(ref: string): Provider | undefined },
@@ -206,6 +295,13 @@ export function validateConfig(
   for (const pipeline of config.rules) {
     // Map: ref → fields exposed by that step (for subsequent steps)
     const exposedByRef = new Map<string, readonly string[]>();
+
+    // The trigger's own outputs stay addressable for every later step, as they are at runtime:
+    // a pipeline may fan out from the trigger (one event -> a write and two notifications).
+    if (pipeline.length > 0) {
+      const { type } = parseRef(pipeline[0].from);
+      exposedByRef.set(pipeline[0].from, getProviderOutputs(type, "trigger"));
+    }
 
     for (let i = 0; i < pipeline.length; i++) {
       const rule = pipeline[i];
@@ -228,8 +324,8 @@ export function validateConfig(
       // Determine what `from` exposes to this step
       let availableFields: readonly string[] = [];
       if (i === 0) {
-        if (fromProvider && !["api", "plane", "form", "taiga"].includes(fromProvider.type)) {
-          log.warn(`${label}: first step must have "from" of type "api", "plane", "form" or "taiga"`);
+        if (fromProvider && !TRIGGER_TYPES.has(fromProvider.type)) {
+          log.warn(`${label}: first step must have "from" of type ${[...TRIGGER_TYPES].map((t) => `"${t}"`).join(", ")}`);
         }
         // For the first step, `from` is the initial trigger/source. Available fields = trigger schema.
         const { type } = parseRef(rule.from);
@@ -246,9 +342,13 @@ export function validateConfig(
 
       // Validate that all template roots used in content exist in availableFields
       if (rule.on?.content && availableFields.length > 0) {
+        // A gitlab step also computes vars of its own (slug, initials, task*) for its templates.
+        const extraFields = toProvider?.type === "gitlab" ? GITLAB_COMPUTED_VARS : [];
         const usedRoots = collectTemplateRoots(rule.on.content);
+        // A string `once` is a key template, resolved against the same fields as the content.
+        if (typeof rule.on.once === "string") collectTemplateRoots(rule.on.once, usedRoots);
         for (const root of usedRoots) {
-          if (!availableFields.includes(root)) {
+          if (!availableFields.includes(root) && !extraFields.includes(root)) {
             log.warn(
               `${label}: template "{{${root}...}}" references field not exposed by ${rule.from}. ` +
                 `Available: [${availableFields.join(", ")}]`,
@@ -298,22 +398,38 @@ export function validateConfig(
       }
 
       // Validate target-specific content
-      if (toProvider?.type === "plane" || toProvider?.type === "taiga") {
-        const content = rule.on?.content;
+      const content = rule.on?.content;
+      if (toProvider?.type === "plane") {
         if (content && !("name" in content)) {
-          log.warn(`${label}: ${toProvider.type} content must include "name" mapping`);
+          log.warn(`${label}: plane content must include "name" mapping`);
+        }
+      } else if (toProvider?.type === "taiga") {
+        // Two modes: create a new item (needs "name") or update an existing one (needs "item").
+        if (content && !("name" in content) && !("item" in content)) {
+          log.warn(`${label}: taiga content must include "name" (create) or "item" (update)`);
+        }
+      } else if (toProvider?.type === "gitlab") {
+        if (content && !GITLAB_CONTENT_KEYS.some((k) => k in content)) {
+          log.warn(
+            `${label}: gitlab content must declare at least one of [${GITLAB_CONTENT_KEYS.join(", ")}]`,
+          );
         }
       } else if (toProvider?.type === "pachka" || toProvider?.type === "webhook") {
-        const content = rule.on?.content;
         if (content && !isNotifyContent(content)) {
           log.warn(`${label}: notify content must include "message"`);
         }
+        if (toProvider.type === "pachka" && !toProvider.dm && toProvider.chatId == null) {
+          log.warn(`${label}: pachka provider "${toProvider.alias}" has no "chatId" (and "dm" is not set)`);
+        }
+        if (toProvider.type === "pachka" && toProvider.dm && content && isNotifyContent(content) && !content.recipient) {
+          log.warn(`${label}: "${rule.to}" is a DM provider — content needs a "recipient" (email or user id)`);
+        }
       } else if (toProvider?.type === "bitrix") {
-        const content = rule.on?.content as Partial<BitrixContent> | undefined;
-        if (!content?.status) {
+        const bitrixContent = content as Partial<BitrixContent> | undefined;
+        if (!bitrixContent?.status) {
           log.warn(`${label}: bitrix content must include "status"`);
-        } else if (!("Closed" === content.status || "Rejected" === content.status)) {
-          log.warn(`${label}: unsupported Bitrix status "${content.status}"`);
+        } else if (bitrixContent.status !== "Closed" && bitrixContent.status !== "Rejected") {
+          log.warn(`${label}: unsupported Bitrix status "${bitrixContent.status}"`);
         }
       }
     }

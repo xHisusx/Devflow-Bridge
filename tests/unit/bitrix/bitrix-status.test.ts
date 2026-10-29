@@ -1,20 +1,14 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   BitrixMappingError,
   parseBitrixIdFromDescription,
   updateBitrixStatusFromTaiga,
-} from "../../src/modules/bitrix/application/services/update-bitrix-status";
-import type { IBitrixClient } from "../../src/modules/bitrix/application/ports/bitrix-api.port";
-import { ProcessIntakePipelineUseCase } from "../../src/modules/plane/application/use-cases/process-intake-pipeline";
-import { ProviderRegistry } from "../../src/core/provider-registry";
-import type { Config, Provider } from "../../src/core/config";
-import { ProcessTaigaWebhookUseCase } from "../../src/modules/taiga/application/use-cases/process-taiga-webhook";
-
-function client(): IBitrixClient {
-  return {
-    updateStatus: mock(() => Promise.resolve({ status: "ok", data: [], errors: [] })),
-  };
-}
+} from "../../../src/modules/bitrix/application/services/update-bitrix-status";
+import { ProcessIntakePipelineUseCase } from "../../../src/modules/plane/application/use-cases/process-intake-pipeline";
+import { ProcessTaigaTriggerUseCase } from "../../../src/modules/taiga/application/use-cases/process-taiga-trigger";
+import { ProviderRegistry } from "../../../src/core/provider-registry";
+import type { Config, Provider } from "../../../src/core/config";
+import { bitrixClientMock, taigaClientMock } from "../../mocks";
 
 describe("Bitrix status integration", () => {
   test.each([
@@ -32,7 +26,7 @@ describe("Bitrix status integration", () => {
   });
 
   test("updates Bitrix with parsed id and configured status", async () => {
-    const bitrix = client();
+    const bitrix = bitrixClientMock();
     const provider = { type: "bitrix" as const, alias: "support", baseUrl: "http://bitrix.test/api" };
 
     const outputs = await updateBitrixStatusFromTaiga(
@@ -51,27 +45,22 @@ describe("Bitrix status integration", () => {
   });
 
   test("executes a from Taiga to Bitrix pipeline step", async () => {
-    const bitrix = client();
-    const taiga = {
-      getProjectBySlug: mock(() => Promise.resolve({ id: 1, slug: "support", name: "Support" })),
-      createItem: mock(() => Promise.resolve({
-        id: 7,
-        ref: 12,
-        subject: "Request",
-        description: "**BitrixID:** 456",
-        tags: [],
-        status: 1,
-        statusName: "New",
-        typeId: null,
-        priorityId: null,
-      })),
-      getItem: mock(),
-      getItemStatuses: mock(),
-      getIssueTypes: mock(),
-      getPriorities: mock(),
-      updateItem: mock(),
-      getMemberIdByEmail: mock(),
-    };
+    const bitrix = bitrixClientMock();
+    const taiga = taigaClientMock({
+      getProjectBySlug: () => Promise.resolve({ id: 1, slug: "support", name: "Support" }),
+      createItem: () =>
+        Promise.resolve({
+          id: 7,
+          ref: 12,
+          subject: "Request",
+          description: "**BitrixID:** 456",
+          tags: [],
+          status: 1,
+          statusName: "New",
+          typeId: null,
+          priorityId: null,
+        }),
+    });
     const providers: Provider[] = [
       { type: "api", alias: "intake", endpoint: "/intake" },
       { type: "taiga", alias: "support", baseUrl: "http://taiga.test", project: "support" },
@@ -88,6 +77,9 @@ describe("Bitrix status integration", () => {
       null,
       null,
       new Map([["taiga:support", taiga]]),
+      new Map(),
+      null,
+      null,
       new Map([["bitrix:support", bitrix]]),
     );
 
@@ -100,7 +92,7 @@ describe("Bitrix status integration", () => {
   });
 
   test("executes the Taiga to Bitrix pipeline on Closed/Rejected status webhook", async () => {
-    const bitrix = client();
+    const bitrix = bitrixClientMock();
     const providers: Provider[] = [
       { type: "taiga", alias: "support", baseUrl: "http://taiga.test", project: "support" },
       { type: "bitrix", alias: "support", baseUrl: "http://bitrix.test/api" },
@@ -128,15 +120,23 @@ describe("Bitrix status integration", () => {
         }],
       ],
     };
-    const useCase = new ProcessTaigaWebhookUseCase(
-      new ProviderRegistry(providers),
-      null,
-      null,
+    const registry = new ProviderRegistry(providers);
+    const taigaClients = new Map([["taiga:support", taigaClientMock()]]);
+    const pipeline = new ProcessIntakePipelineUseCase(
       config,
+      registry,
+      new Map(),
+      null,
+      null,
+      taigaClients,
+      new Map(),
+      null,
+      null,
       new Map([["bitrix:support", bitrix]]),
     );
+    const trigger = new ProcessTaigaTriggerUseCase(config, registry, taigaClients, pipeline);
 
-    const result = await useCase.execute({
+    const result = await trigger.execute({
       action: "change",
       type: "issue",
       data: {
@@ -150,14 +150,14 @@ describe("Bitrix status integration", () => {
       change: { diff: { status: { from: "In progress", to: "Closed" } } },
     });
 
-    expect(result.bitrixUpdated).toBe(1);
+    expect(result.triggered).toBe(1);
     expect(bitrix.updateStatus).toHaveBeenCalledWith({
       id: 654,
       status: "Closed",
       resolution: "Закрыто в Taiga",
     });
 
-    await useCase.execute({
+    await trigger.execute({
       action: "change",
       type: "issue",
       data: {
@@ -174,6 +174,66 @@ describe("Bitrix status integration", () => {
       id: 654,
       status: "Rejected",
       resolution: "Отклонено в Taiga",
+    });
+  });
+
+  test("Taiga's own `close` action triggers a rule that asks for it", async () => {
+    const bitrix = bitrixClientMock();
+    const providers: Provider[] = [
+      { type: "taiga", alias: "support", baseUrl: "http://taiga.test", project: "support" },
+      { type: "bitrix", alias: "support", baseUrl: "http://bitrix.test/api" },
+    ];
+    const config: Config = {
+      providers,
+      rules: [[{
+        from: "taiga:support",
+        to: "bitrix:support",
+        on: {
+          action: "close",
+          status: "Closed",
+          content: { status: "Closed", resolution: "Закрыто в Taiga" },
+        },
+      }]],
+    };
+    const registry = new ProviderRegistry(providers);
+    const taigaClients = new Map([["taiga:support", taigaClientMock()]]);
+    const trigger = new ProcessTaigaTriggerUseCase(
+      config,
+      registry,
+      taigaClients,
+      new ProcessIntakePipelineUseCase(
+        config,
+        registry,
+        new Map(),
+        null,
+        null,
+        taigaClients,
+        new Map(),
+        null,
+        null,
+        new Map([["bitrix:support", bitrix]]),
+      ),
+    );
+
+    // `close` arrives without a change.diff, so the action is all a rule has to go by.
+    const result = await trigger.execute({
+      action: "close",
+      type: "issue",
+      data: {
+        id: 8,
+        ref: 13,
+        subject: "Request",
+        description: "**BitrixID:** 777",
+        project: { permalink: "http://taiga.test/project/support", name: "Support" },
+        status: { name: "Closed" },
+      },
+    });
+
+    expect(result.triggered).toBe(1);
+    expect(bitrix.updateStatus).toHaveBeenCalledWith({
+      id: 777,
+      status: "Closed",
+      resolution: "Закрыто в Taiga",
     });
   });
 });

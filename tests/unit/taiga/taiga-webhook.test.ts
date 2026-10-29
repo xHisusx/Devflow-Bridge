@@ -6,6 +6,7 @@ import type { IMessengerClient } from "../../../src/modules/messenger/applicatio
 import type { IMessageStore } from "../../../src/modules/messenger/application/ports/message-store.port";
 import type { Config, Provider } from "../../../src/core/config";
 import { ProviderRegistry } from "../../../src/core/provider-registry";
+import { messengerClientMock, messageStoreMock, pachkaMessage } from "../../mocks";
 
 const PROVIDERS: Provider[] = [
   {
@@ -27,24 +28,24 @@ const PROVIDERS: Provider[] = [
 ];
 
 function createMockMessengerClient(): IMessengerClient {
-  return {
-    sendMessage: mock(() => Promise.resolve({ id: 999 })),
-    editMessage: mock(() => Promise.resolve()),
+  return messengerClientMock({
+    sendMessage: mock(() => Promise.resolve(pachkaMessage())),
+    editMessage: mock(() => Promise.resolve(pachkaMessage())),
     addReaction: mock(() => Promise.resolve()),
     getOrCreateThread: mock(() => Promise.resolve({ id: 1, chat_id: 1, message_id: 1 })),
-    sendThreadMessage: mock(() => Promise.resolve({ id: 1000 })),
-    getMessage: mock(() => Promise.resolve({ id: 100, content: "original text" })),
+    sendThreadMessage: mock(() => Promise.resolve(pachkaMessage({ id: 1000 }))),
+    getMessage: mock(() => Promise.resolve(pachkaMessage({ id: 100, content: "original text" }))),
     getUser: mock(() => Promise.resolve({ id: 9 })),
-  };
+  });
 }
 
 function createMockMessageStore(entries: Record<string, number> = {}): IMessageStore {
-  return {
+  return messageStoreMock({
     get: mock((issueId: string, target: string) => entries[`${issueId}:${target}`] ?? null),
     set: mock(() => {}),
     delete: mock(() => {}),
     getByPachkaMessageId: mock(() => null),
-  };
+  });
 }
 
 function changePayload(overrides: Partial<TaigaWebhookPayload> = {}): TaigaWebhookPayload {
@@ -153,7 +154,9 @@ describe("ProcessTaigaWebhookUseCase", () => {
         ],
       },
     );
-    expect(messengerClient.getMessage).not.toHaveBeenCalled();
+    // the message is still read, but only for the link buttons it carries - the text comes from
+    // the template
+    expect(messengerClient.getMessage).toHaveBeenCalledWith(100);
   });
 
   test("assignee-only change also re-syncs the message", async () => {

@@ -32,7 +32,13 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 ### Core (`src/core/`)
 
 - `logger.ts` — структурированный логгер (debug/info/warn/error)
+- `env.ts` — `loadDotEnv()`: `.env` перекрывает переменные, унаследованные от шелла
 - `config.ts` — типы конфига (`Config`, `PachkaConfig`), `loadConfig()`, `validateConfig()`
+- `provider-schema.ts` — `PROVIDER_OUTPUTS`, `getProviderOutputs()`, `GITLAB_COMPUTED_VARS`
+- `slug.ts` — транслитерация ru→lat, `slugify()`, `initials()` (имена ветвей GitLab), `nameKey()` (сверка людей по имени)
+- `pipeline.ts` — `filterOutputs()`, `onceKey()` (ключ guard-а `once`)
+- `persistence/pipeline-state.port.ts` — интерфейс `IPipelineStateStore` (`once`-ключи, связи ветка/MR → задача)
+- `persistence/sqlite-pipeline-state.ts` — `PipelineStateStore` (bun:sqlite, `PIPELINE_DB_PATH`)
 - `events/event-bus.ts` — typed EventBus для межмодульного взаимодействия
 
 ### Модуль Plane (`src/modules/plane/`)
@@ -59,6 +65,8 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 - `application/use-cases/execute-actions.ts` — `executeActions()` (reaction, threadReply, editPrevious)
 - `application/use-cases/open-form-view.ts` — `OpenFormViewUseCase` (открытие модальной формы по кнопке)
 - `application/use-cases/process-form-submission.ts` — `ProcessFormSubmissionUseCase` (отправка формы → пайплайн)
+- `application/services/pachka-user-directory.ts` — `PachkaUserDirectory` (email → user id), `workEmailOf()`
+- `application/services/resolve-pachka-target.ts` — `resolvePachkaTarget()` (чат или ЛС для notify-шага)
 - `infrastructure/clients/pachka-api-client.ts` — `PachkaClient` (implements `IMessengerClient`)
 - `infrastructure/clients/pachka-webhook-sender.ts` — legacy webhook отправка
 - `infrastructure/persistence/sqlite-message-store.ts` — `MessageStore` (implements `IMessageStore`)
@@ -66,9 +74,35 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 
 ### Модуль Taiga (`src/modules/taiga/`)
 
+- `domain/entities/taiga-webhook-payload.ts` — тип payload вебхука Taiga
+- `domain/services/taiga-trigger.ts` — `extractTaigaFacts()`, `matchesTaigaCondition()`, `buildTaigaTriggerOutputs()`, `normalizeTaigaEntity()`, `extractProjectSlug()`, `milestoneName()`, `normalizeTags()` (чистые функции)
+- `domain/services/feedback-buttons.ts` — `buildFeedbackButtons()`, `keepLinkButtons()`, `statusLabel()`, `buildItemUrl()`
 - `application/ports/taiga-api.port.ts` — интерфейс `ITaigaApiClient`
 - `application/services/create-taiga-issue.ts` — `createTaigaIssueFromContent()`, `TaigaWriteError` (создание item + сборка outputs)
-- `infrastructure/clients/taiga-api-client.ts` — `TaigaApiClient` (адаптер над npm-библиотекой `taiga-api-client`)
+- `application/services/update-taiga-item.ts` — `updateTaigaItemFromContent()` (обновление: кастомные поля, статус, исполнитель, комментарий; неизвестное поле — warning, не ошибка)
+- `application/use-cases/process-taiga-trigger.ts` — `ProcessTaigaTriggerUseCase` (вебхук Taiga как триггер пайплайна, резолв email исполнителя через memberships)
+- `application/use-cases/process-taiga-webhook.ts` — `ProcessTaigaWebhookUseCase` (синхронизация карточки в Пачке)
+- `infrastructure/clients/taiga-api-client.ts` — `TaigaApiClient` (адаптер над npm-библиотекой `taiga-api-client`; кастомные атрибуты — через `sdk.http`)
+
+### Модуль GitLab (`src/modules/gitlab/`)
+
+- `domain/entities/gitlab-webhook-payload.ts` — типы payload вебхуков GitLab (merge_request, push, ...)
+- `domain/services/branch-name.ts` — `resolveRepo()`, `resolveBranchType()`, `buildBranchName()`, `sanitizeBranchName()`, `missingBranchVars()`, `draftTitle()` (чистые функции)
+- `domain/services/gitlab-trigger.ts` — `extractGitLabFacts()`, `matchesGitLabCondition()`, `buildGitLabTriggerOutputs()`, `branchFromRef()` (чистые функции)
+- `application/ports/gitlab-api.port.ts` — интерфейс `IGitLabApiClient` (коммиты, ветки, MR, issues, пользователи, участники групп)
+- `application/services/run-gitlab-step.ts` — `runGitLabStep()`, `GitLabWriteError` (ветка + MR + issue + комментарий, сборка outputs)
+- `application/services/gitlab-user-resolver.ts` — `GitLabUserResolver` (email → пользователь GitLab без админского токена), `usernameCandidates()`
+- `application/services/task-links.ts` — `rememberTaskLink()` (ветка/MR → задача трекера)
+- `application/use-cases/process-gitlab-trigger.ts` — `ProcessGitLabTriggerUseCase` (вебхук GitLab как триггер пайплайна), `coversRepo()`
+- `infrastructure/clients/gitlab-api-client.ts` — `GitLabApiClient` (REST v4 через fetch), `GitLabApiError`
+- `infrastructure/webhooks/gitlab-webhook.route.ts` — Elysia-plugin: `POST /webhook/gitlab`
+
+### Модуль Bitrix (`src/modules/bitrix/`)
+
+- `domain/entities/status.ts` — `StatusType`, `BitrixStatusRequest`, `BitrixStatusResponse`
+- `application/ports/bitrix-api.port.ts` — интерфейс `IBitrixClient`
+- `application/services/update-bitrix-status.ts` — `parseBitrixIdFromDescription()` (BitrixID из описания задачи), `updateBitrixStatusFromTaiga()`, `BitrixMappingError`
+- `infrastructure/clients/bitrix-api-client.ts` — `BitrixApiClient` (implements `IBitrixClient`, `PUT /support/appeal/status/`)
 
 ### Модуль GitHub (`src/modules/github/`) — заглушка для будущей интеграции
 
@@ -105,9 +139,13 @@ E2E-тесты отправляют реальные сообщения в Па�
 ### Структура тестов
 
 - `tests/helpers.ts` — утилиты: создание payload, ожидание сообщений, cleanup
-- `tests/unit/core/` — тесты core (logger)
+- `tests/mocks.ts` — общие моки портов (`messengerClientMock`, `taigaClientMock`, `gitlabClientMock`, `bitrixClientMock`, `messageStoreMock`, `pipelineStateMock`, `pachkaMessage`)
+- `tests/unit/core/` — тесты core (logger, slug, provider-schema drift guards)
 - `tests/unit/plane/` — тесты plane domain (rule-matcher, template-renderer)
-- `tests/unit/messenger/` — тесты messenger (message-store)
+- `tests/unit/taiga/` — тесты taiga (триггер, feedback, создание/обновление item)
+- `tests/unit/gitlab/` — тесты gitlab-шага, триггера, резолва пользователей и сквозные сценарии «назначение → ветка + MR + ЛС» и «MR влит → статус в Taiga»
+- `tests/unit/bitrix/` — тесты bitrix (разбор BitrixID, шаг `to: bitrix:*`, сквозной сценарий «закрытие в Taiga → статус обращения» через `createApp`)
+- `tests/unit/messenger/` — тесты messenger (message-store, формы, ЛС)
 - `tests/e2e/` — полный цикл: webhook -> сервер -> Pachka API -> проверка
 
 ### Правила написания тестов
@@ -225,6 +263,8 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane"` | Plane (через webhook) |
+| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story) |
+| `"gitlab:<alias>"` | Вебхук GitLab: событие репозитория (MR открыт/смержен/закрыт, push). Условия: `event`, `action`, `state`, `target`, `branch`, `draft`, `labels` |
 | `"api:intake"` | API endpoint `/api/plane/intake-issues` |
 | `"form:<alias>"` | Отправка формы Пачки (модального представления) провайдера `form:<alias>` |
 
@@ -232,8 +272,10 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane:<alias>"` | Создать задачу в Plane-провайдере `<alias>` (workspace/project из провайдера). Работает и в intake-, и в webhook-пайплайнах (последнее = mirror/escalate: создать задачу по событию). Использует тот же путь создания, что и intake. |
-| `"taiga:<alias>"` | Создать item в Taiga-провайдере `<alias>` (issue / user story / task — тип задаётся полем `entity` провайдера, по умолчанию `issue`). Работает и в intake-, и в webhook-пайплайнах. Attachments не поддерживаются. |
-| `"pachka:<channel>"` | Уведомить в Пачку, channel = alias `pachka`-провайдера |
+| `"taiga:<alias>"` | Создать item в Taiga-провайдере `<alias>` (issue / user story / task — тип задаётся полем `entity` провайдера, по умолчанию `issue`). Если в `content` есть `item` — не создать, а **обновить** существующий item (`customFields`, `status`, `assigneeEmail`, `comment`). Работает и в intake-, и в webhook-пайплайнах. Attachments не поддерживаются. |
+| `"gitlab:<alias>"` | Операции в репозитории GitLab-провайдера `<alias>`: `branch` (создать/переиспользовать), `mr` (создать/переиспользовать draft MR), `issue`, `comment` (нота к MR) |
+| `"bitrix:<alias>"` | Проставить статус обращения Bitrix (`Closed` / `Rejected`). Id обращения берётся из описания задачи (`**BitrixID:** 12345`), а не из `content`; без него шаг пропускается с warning |
+| `"pachka:<channel>"` | Уведомить в Пачку, channel = alias `pachka`-провайдера. У провайдера с `"dm": true` — в ЛС получателю из `content.recipient` (рабочая почта или user id) |
 | `"webhook:<name>"` | Отправить через webhook, name = alias `webhook`-провайдера |
 
 ### Plane API-ключи (несколько инстансов)
@@ -258,6 +300,90 @@ E2E-тесты отправляют реальные сообщения в Па�
 ```
 
 Креды резолвятся из env по той же схеме, что у Plane: `TAIGA_APP_TOKEN_<ALIAS>` (application token) либо `TAIGA_USERNAME_<ALIAS>` + `TAIGA_PASSWORD_<ALIAS>` (логин при старте), с откатом на общие `TAIGA_APP_TOKEN` / `TAIGA_USERNAME` / `TAIGA_PASSWORD`. Если кредов нет — старт падает. Поле `labels` в content маппится в tags Taiga (резолв по имени не нужен, теги создаются на лету). Поле `type` в content (только для `entity: "issue"`) задаёт тип запроса по имени из справочника типов проекта («Ошибка», «Вопрос»...), без учёта регистра; неизвестный тип — ошибка 400 со списком доступных; если поле пустое/отсутствует — тип по умолчанию. Поле `priority` в content (только для `entity: "issue"`) аналогично задаёт приоритет задачи по имени из справочника приоритетов проекта («Low», «Normal», «High», «Critical»...), без учёта регистра; неизвестный приоритет — ошибка со списком доступных. В outputs шага `priority` отдаётся уже с применённым `priorityLabels` (или сырое имя, «—» если приоритет не определён).
+
+### GitLab-провайдер
+
+```jsonc
+{
+  "type": "gitlab",
+  "alias": "backend",
+  "baseUrl": "https://git.example.com",   // корень инстанса (/api/v4 добавляется клиентом)
+  "project": "team/backend",              // репозиторий по умолчанию (path или numeric id)
+  "repoByTag": { "frontend": "team/web" },// тег задачи → репозиторий (первое совпадение)
+  "defaultBranch": "master",              // база ветвей и target MR (по умолчанию "master")
+  "branch": { "pattern": "{{branchType}}/{{assigneeInitials}}/{{slug}}", "maxSlugLength": 60,
+              "typeByTag": { "баг": "fix", "Bug": "fix" }, "type": "feat" },
+  "mr": { "draft": true, "title": "{{taskIdentifier}} {{taskName}}", "removeSourceBranch": true },
+  "groups": ["team"],                     // группы, среди участников которых искать исполнителя
+  "userMap": { "a.makhov@example.com": { "username": "amakhov", "initials": "am" } }
+}
+```
+
+Токен из env: `GITLAB_TOKEN_<ALIAS>` с откатом на `GITLAB_TOKEN` (схема как у Plane/Taiga); нет токена — старт падает. Секрет вебхука — `GITLAB_WEBHOOK_SECRET[_<ALIAS>]`.
+
+- Админский PAT не обязателен: хватает group access token с ролью Developer и скоупом `api` (на self-managed доступен в любой редакции), project access token или PAT бота, добавленного в группу как Developer.
+- Исполнитель ищется по порядку: `userMap` → `GET /users?search=<email>` (приватный email — только админским токеном) → участники `groups` (или самого репозитория) по email, по username из локальной части email, по огрублённому имени (`nameKey`: «Алексей Махов» = «Alexey Makhov») → `GET /users?username=<кандидат>`. Никого не нашли — MR без исполнителя и warning в лог. Индекс участников кешируется на 10 минут.
+- Draft задаётся префиксом `Draft: ` в заголовке — в GitLab API нет флага `draft` при создании MR.
+- Ветка и MR идемпотентны: существующая ветка переиспользуется, открытый MR по этой ветке — тоже.
+- Ошибка создания MR не роняет шаг: ветка остаётся, `mrUrl` пустой, причина — в логе.
+- Все плейсхолдеры шаблона ветки обязаны разрешиться, иначе `GitLabWriteError` (чтобы не появлялись ветки вида `feat/`).
+- Шаг `to: gitlab:*` запоминает связь `репозиторий + ветка → задача трекера` (+ iid MR) в `PipelineStateStore`. Это единственный путь обратно: в вебхуках GitLab id задачи нет.
+
+### Bitrix-провайдер
+
+```jsonc
+{
+  "type": "bitrix",
+  "alias": "support",
+  "baseUrl": "https://portal.example.com/api/v1"   // корень API, без пути /support/appeal/status/
+}
+```
+
+Токен из env: `BITRIX_API_TOKEN_<ALIAS>` с откатом на `BITRIX_API_TOKEN` (схема как у Plane/Taiga/GitLab); нет токена — старт падает.
+
+Провайдер умеет одно — проставить статус обращения (`PUT /support/appeal/status/`), т.е. замкнуть intake-поток «заявка из Bitrix → задача в трекере». `content`: `status` (`"Closed"` | `"Rejected"`, обязателен, проверяется валидацией конфига) и `resolution` (опционально, default «Статус изменён в Taiga»).
+
+Id обращения в `content` не передаётся — шаг читает его из `description` источника (`**BitrixID:** 12345`, также `BitrixID: 12345` и `**Bitrix ID:** 12345`), туда его кладёт intake-шаг. Задача без BitrixID — не ошибка: шаг пропускается с warning (`BitrixMappingError`), потому что не каждая заявка приходит из Bitrix.
+
+Типовой сценарий — «задачу закрыли в Taiga → закрыть обращение» (Taiga присылает закрытие отдельным событием `close`, поэтому условие именно `"action": "close"`, а разделяет случаи `status`):
+
+```json
+{
+  "from": "taiga:ikn", "to": "bitrix:support",
+  "on": {
+    "action": "close", "status": "Closed",
+    "content": { "status": "Closed", "resolution": "Обращение закрыто в Taiga" }
+  }
+}
+```
+
+### Вебхук GitLab → триггер пайплайна
+
+`POST /webhook/gitlab` (`src/modules/gitlab/infrastructure/webhooks/gitlab-webhook.route.ts`) запускает пайплайны с первым шагом `from: "gitlab:<alias>"`. Настройка: **Settings → Webhooks** в проекте (в группе — только Premium/Ultimate; один хук на весь инстанс с одним секретом — **Admin Area → System Hooks**, доступно в любой редакции), URL `https://<хост>/webhook/gitlab`, Secret token = `GITLAB_WEBHOOK_SECRET[_<ALIAS>]` (GitLab присылает его как есть в `X-Gitlab-Token`, подписи нет), триггеры *Merge request events* / *Push events*. Нет секретов в env — проверка отключена (warning при старте). Провайдер выбирается по репозиторию: `project`, значения `repoByTag` или всё внутри `groups` (`coversRepo()`).
+
+Типовой обратный сценарий — «MR влит → статус в Taiga»:
+
+```json
+{
+  "from": "gitlab:backend", "to": "taiga:dev",
+  "on": {
+    "event": "merge_request", "action": "merge", "target": "master",
+    "content": { "item": "{{taskId}}", "status": "Done", "comment": "MR {{mrUrl}} влит" }
+  }
+}
+```
+
+### `once` — шаг только один раз
+
+`on.once: true` — шаг выполняется один раз на задачу и получателя (ключ: шаг + `issueId`/`taskId` + отрендеренный `recipient`); `on.once: "<шаблон>"` — ключ задаётся явно. Ключи в SQLite (`PIPELINE_DB_PATH`), занимаются до выполнения шага и освобождаются при его падении. Нужен, чтобы повторное назначение задачи не присылало человеку второе ЛС (ветка и MR идемпотентны сами). Шаги, читающие `from` пропущенного шага, пропускаются вместе с ним.
+
+### Личные сообщения в Пачку (`dm`)
+
+```jsonc
+{ "type": "pachka", "alias": "dev-dm", "dm": true, "workEmailField": "Рабочая почта" }
+```
+
+Провайдер без `chatId`; получатель — в `content.recipient` шага (рабочая почта или числовой user id). Поиск: `GET /users?query=<email>`, затем полный список сотрудников со сверкой кастомного поля (кеш 10 минут). Нужен скоуп `users:read`, отправка — `POST /messages` с `entity_type: "user"`. Получатель не найден — шаг пропускается с warning.
 
 ### Обратная связь Пачка → Taiga (feedback)
 
@@ -287,7 +413,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 1. Стартовая кнопка задаётся в notify-шаге пайплайна: `{ "text": "👍 Взять в работу", "callbackData": "taiga:<alias>:accept:{{issueId}}" }`. Формат callbackData: `taiga:<alias>:<action>:<itemId>`.
 2. Нажатие прилетает в `POST /webhook/pachka` (исходящий webhook Пачки должен указывать на этот роут) и обрабатывается `HandleTaigaFeedbackUseCase` (`src/modules/taiga/application/use-cases/handle-taiga-feedback.ts`).
 3. Действия `accept` и `resume` дополнительно назначают исполнителя: у нажавшего берётся email из кастомного поля `workEmailField` (fallback — email профиля), участник проекта Taiga ищется по `user_email` (связь пользователей по email, не по id).
-4. После перехода кнопки сообщения заменяются набором из `feedback.buttons` для нового статуса; статус ищется среди статусов проекта по имени.
+4. После перехода кнопки-действия заменяются набором из `feedback.buttons` для нового статуса (кнопки-ссылки сообщение сохраняет); статус ищется среди статусов проекта по имени.
 5. Имена действий свободные — семантика фиксирована только для `accept`/`resume` (назначение исполнителя), остальные просто меняют статус.
 6. `feedback.statusLabels` — отображаемые имена статусов для сообщений (`"In progress": "В процессе 🚀"`).
 7. Outputs taiga-шага включают `status` (label), `assignee`, `type` (тип issue из Taiga: «Ошибка», «Вопрос»...) — можно использовать в шаблоне уведомления для «живой карточки».
@@ -302,6 +428,8 @@ E2E-тесты отправляют реальные сообщения в Па�
 - **Secret key**: произвольная строка; та же строка должна быть в env `TAIGA_WEBHOOK_SECRET`. Подпись — HMAC-SHA1 от raw body в заголовке `X-TAIGA-WEBHOOK-SIGNATURE`; при пустом `TAIGA_WEBHOOK_SECRET` подпись не проверяется.
 
 Провайдер события определяется по slug проекта из `data.project.permalink`; тестовый пинг Taiga (`action: "test"`) отвечает `200 ok`.
+
+Синхронизация сообщения (`ProcessTaigaWebhookUseCase`) и запуск пайплайнов (`ProcessTaigaTriggerUseCase`) — две независимые ветки одного роута: одно событие может и перерисовать карточку, и запустить пайплайн, и падение одной не скрывает другую. Ответ: `{ "ok": true, "updated": <сообщений>, "triggered": <пайплайнов> }`. Всё, что запускается событием Taiga (в том числе `to: bitrix:*`), идёт через триггер и общий движок пайплайнов, а не отдельным путём.
 
 ### Формы Пачки (модальные представления)
 
@@ -485,12 +613,18 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 | `api:<endpoint>` | `body`, `files`, `receivedAt` (время приёма запроса, "11.07.2026 08:03", серверная TZ) |
 | `plane:<alias>` (триггер, первый шаг webhook-пайплайна) | `project`, `seq`, `title`, `state`, `stateGroup`, `priority`, `action`, `entity`, `issueId`, `issueUrl`, `identifier`, `assignee` |
 | `plane:<alias>` (результат шага, intake `to: plane:*`) | `issueId`, `issueUrl`, `seq`, `identifier`, `name`, `title`, `description`, `labels`, `workspace`, `project`, `action` |
+| `taiga:<alias>` (триггер, первый шаг webhook-пайплайна) | `action`, `entity`, `issueId`, `issueUrl`, `seq`, `identifier`, `name`, `title`, `description`, `project`, `status`, `statusFrom`, `type`, `priority`, `labels`, `assignee`, `assigneeEmail`, `assigneeUsername`, `assigneeInitials`, `slug`, `author`, `changedFields`, `sprint`, `parentId`, `parentSeq`, `parentIdentifier`, `parentName`, `parentUrl`, `receivedAt` |
 | `taiga:<alias>` (результат шага, `to: taiga:*`) | `issueId`, `issueUrl`, `seq` (ref), `identifier` (`#ref`), `name`, `title`, `description`, `labels`, `project`, `action`, `status`, `assignee`, `type`, `priority` |
+| `gitlab:<alias>` (триггер, первый шаг webhook-пайплайна) | `event`, `action`, `state`, `repo`, `repoUrl`, `branch`, `target`, `mrIid`, `mrUrl`, `mrTitle`, `draft`, `merged`, `labels`, `author`, `authorEmail`, `commits`, `lastCommit`, `sha`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `receivedAt` |
+| `gitlab:<alias>` (результат шага, `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier` |
+| `bitrix:<alias>` (результат шага, `to: bitrix:*`) | `bitrixId`, `status`, `resolution`, `response`, `provider` |
 | `pachka:<alias>` | `messageId`, `chatId`, `channel`, `message` |
 | `webhook:<alias>` | `channel`, `message` |
 | `form:<alias>` (триггер, отправка формы) | `data`, `user`, `userId`, `chatId`, `receivedAt`, `meta` |
 
-> `plane` играет две роли. Когда он **источник-триггер** (первый шаг, `from: plane:*` в webhook-пайплайне) — доступны поля события (`state`, `priority`, `assignee`...). Когда он **результат шага** (intake: `to: plane:*` → следующий `from: plane:*`) — доступны поля созданной задачи (`name`, `description`, `labels`...).
+> `plane` и `taiga` играют две роли. Когда провайдер — **источник-триггер** (первый шаг, `from: plane:*` / `from: taiga:*` в webhook-пайплайне) — доступны поля события (`state`/`status`, `priority`, `assignee`, `changedFields`...). Когда он **результат шага** (`to: plane:*` / `to: taiga:*` → следующий `from:` того же ref) — доступны поля записанной задачи (`name`, `description`, `labels`...).
+
+> У `gitlab`-шага `issueId`/`issueUrl` относятся к **issue в GitLab**; исходная задача трекера прокидывается как `taskId`, `taskName`, `taskUrl`, `taskIdentifier`. Внутри своего `content` gitlab-шаг дополнительно видит вычисляемые переменные (`GITLAB_COMPUTED_VARS`): `slug`, `assigneeInitials`, `assignee`, `assigneeEmail`, `repo`, `repoUrl`, `task*`.
 
 Пример с явной декларацией:
 ```json
@@ -691,6 +825,62 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
               { "type": "buttons", "buttons": [{ "text": "Открыть в Taiga", "url": "{{issueUrl}}" }] }
             ]
           }
+        }
+      }
+    ]
+  ]
+}
+```
+
+### Назначение задачи → ветка + draft MR + ЛС исполнителю
+
+Полная версия с пояснениями — в [docs/configuration.md](docs/configuration.md) («Задача назначена → ветка, draft MR и ЛС исполнителю»).
+
+```json
+{
+  "providers": [
+    { "type": "taiga", "alias": "dev", "baseUrl": "https://tasks.example.com", "project": "dev", "entity": "user_story",
+      "feedback": { "statuses": { "accept": "In progress" }, "workEmailField": "Рабочая почта" } },
+    { "type": "gitlab", "alias": "backend", "baseUrl": "https://git.example.com", "project": "team/backend", "defaultBranch": "master" },
+    { "type": "pachka", "alias": "dev-dm", "dm": true }
+  ],
+  "rules": [
+    [
+      {
+        "from": "taiga:dev", "to": "gitlab:backend",
+        "on": {
+          "changed": "assigned_to", "assigned": "first",
+          "content": {
+            "branch": "feat/{{assigneeInitials}}/{{slug}}",
+            "mr": { "title": "{{taskIdentifier}} {{taskName}}", "description": "Задача: {{taskUrl}}" }
+          }
+        }
+      },
+      {
+        "from": "gitlab:backend", "to": "taiga:dev",
+        "on": { "content": { "item": "{{taskId}}", "customFields": { "Gitlab MR": "{{mrUrl}}", "Ветка": "{{branch}}" } } }
+      },
+      {
+        "from": "gitlab:backend", "to": "pachka:dev-dm",
+        "on": {
+          "once": true,
+          "content": {
+            "recipient": "{{assigneeEmail}}",
+            "message": "🆕 Вам назначена [{{taskIdentifier}} {{taskName}}]({{taskUrl}})\nВетка: `{{branch}}`",
+            "actions": [{ "type": "buttons", "buttons": [
+              { "text": "🔀 MR", "url": "{{mrUrl}}" },
+              { "text": "👍 Взять в работу", "callbackData": "taiga:dev:accept:{{taskId}}" }
+            ]}]
+          }
+        }
+      }
+    ],
+    [
+      {
+        "from": "gitlab:backend", "to": "taiga:dev",
+        "on": {
+          "event": "merge_request", "action": "merge", "target": "master",
+          "content": { "item": "{{taskId}}", "status": "Done", "comment": "MR {{mrUrl}} влит в {{target}}" }
         }
       }
     ]

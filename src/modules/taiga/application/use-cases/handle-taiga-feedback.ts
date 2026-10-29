@@ -3,14 +3,20 @@ import type { Config, TaigaEntity, TaigaProvider } from "../../../../core/config
 import type { ITaigaApiClient, TaigaProjectInfo } from "../ports/taiga-api.port";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
 import type { IMessageStore } from "../../../messenger/application/ports/message-store.port";
-import { buildFeedbackButtons, TAIGA_CALLBACK_PREFIX } from "../../domain/services/feedback-buttons";
+import {
+  buildFeedbackButtons,
+  keepLinkButtons,
+  TAIGA_CALLBACK_PREFIX,
+} from "../../domain/services/feedback-buttons";
 import { findNotifyTemplate, buildItemVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
+import {
+  DEFAULT_WORK_EMAIL_FIELD,
+  workEmailOf,
+} from "../../../messenger/application/services/pachka-user-directory";
 import { log } from "../../../../core/logger";
 
 export { TAIGA_CALLBACK_PREFIX };
-
-const DEFAULT_WORK_EMAIL_FIELD = "Рабочая почта";
 
 /** Actions that also assign the clicking user to the item. */
 const ASSIGNING_ACTIONS = new Set(["accept", "resume"]);
@@ -110,10 +116,7 @@ export class HandleTaigaFeedbackUseCase {
     if (!pachkaUserId || !this.messengerClient) return null;
     try {
       const user = await this.messengerClient.getUser(pachkaUserId);
-      const custom = user.custom_properties?.find(
-        (p) => p.name.toLowerCase() === workEmailField.toLowerCase(),
-      );
-      const email = (typeof custom?.value === "string" ? custom.value : "") || user.email || "";
+      const email = workEmailOf(user, workEmailField);
       if (!email) {
         log.warn(`Taiga feedback: no work email for Pachka user`, { pachkaUserId, workEmailField });
         return null;
@@ -142,7 +145,13 @@ export class HandleTaigaFeedbackUseCase {
   ): Promise<void> {
     if (!input.messageId || !this.messengerClient) return;
     try {
-      const buttons = buildFeedbackButtons(provider.alias, itemId, nextButtons);
+      // The message is read either way: its link buttons outlive the transition, and without a
+      // template its text is kept as it is.
+      const current = await this.messengerClient.getMessage(input.messageId);
+      const buttons = [
+        ...keepLinkButtons(current.buttons),
+        ...buildFeedbackButtons(provider.alias, itemId, nextButtons),
+      ];
 
       let content: string | null = null;
       const target = this.messageStore?.getByPachkaMessageId(input.messageId)?.target;
@@ -153,7 +162,7 @@ export class HandleTaigaFeedbackUseCase {
         const vars = await buildItemVars(client, provider, project, itemId);
         content = renderMessage(template, vars);
       } else {
-        content = (await this.messengerClient.getMessage(input.messageId)).content;
+        content = current.content;
       }
 
       await this.messengerClient.editMessage(input.messageId, content, { buttons });

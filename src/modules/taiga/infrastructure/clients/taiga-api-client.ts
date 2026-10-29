@@ -5,11 +5,20 @@ import type {
   ITaigaApiClient,
   TaigaCreatePayload,
   TaigaCreatedItem,
+  TaigaCustomAttribute,
+  TaigaCustomAttributeValues,
   TaigaItemInfo,
   TaigaItemPatch,
   TaigaProjectInfo,
   TaigaStatusInfo,
 } from "../../application/ports/taiga-api.port";
+
+/** URL segments of the custom-attribute endpoints, which differ from the resource names. */
+const CUSTOM_ATTR_PATHS: Record<TaigaEntity, { definitions: string; values: string }> = {
+  issue: { definitions: "issue-custom-attributes", values: "issues" },
+  user_story: { definitions: "userstory-custom-attributes", values: "userstories" },
+  task: { definitions: "task-custom-attributes", values: "tasks" },
+};
 
 export interface TaigaCredentials {
   /** Long-lived Application token (`Authorization: Application <token>`). */
@@ -98,6 +107,8 @@ export class TaigaApiClient implements ITaigaApiClient {
       id: item.id,
       ref: item.ref,
       subject: item.subject,
+      description: item.description ?? "",
+      tags: (item.tags ?? []).map(([name]) => name),
       version: item.version,
       status: item.status,
       statusName: raw.status_extra_info?.name ?? null,
@@ -136,5 +147,44 @@ export class TaigaApiClient implements ITaigaApiClient {
       if (m.user !== null && (m.user_email ?? "").toLowerCase() === needle) return m.user;
     }
     return null;
+  }
+
+  async getMemberEmailById(projectId: number, userId: number): Promise<string | null> {
+    for await (const m of this.sdk.memberships.paginate({ project: projectId })) {
+      if (m.user === userId) return m.user_email ?? null;
+    }
+    return null;
+  }
+
+  // Custom attributes are not wrapped by the SDK yet — the low-level http client handles them.
+  async getCustomAttributes(entity: TaigaEntity, projectId: number): Promise<TaigaCustomAttribute[]> {
+    const { data } = await this.sdk.http.get<Array<{ id: number; name: string }>>(
+      `/${CUSTOM_ATTR_PATHS[entity].definitions}`,
+      { query: { project: projectId } },
+    );
+    return (data ?? []).map((a) => ({ id: a.id, name: a.name }));
+  }
+
+  async getCustomAttributeValues(
+    entity: TaigaEntity,
+    itemId: number,
+  ): Promise<TaigaCustomAttributeValues> {
+    const { data } = await this.sdk.http.get<{
+      attributes_values?: Record<string, unknown>;
+      version: number;
+    }>(`/${CUSTOM_ATTR_PATHS[entity].values}/custom-attributes-values/${itemId}`);
+    return { values: data?.attributes_values ?? {}, version: data?.version ?? 1 };
+  }
+
+  async setCustomAttributeValues(
+    entity: TaigaEntity,
+    itemId: number,
+    values: Record<string, unknown>,
+    version: number,
+  ): Promise<void> {
+    await this.sdk.http.patch(
+      `/${CUSTOM_ATTR_PATHS[entity].values}/custom-attributes-values/${itemId}`,
+      { body: { attributes_values: values, version } },
+    );
   }
 }

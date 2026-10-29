@@ -41,6 +41,8 @@ export interface TaigaItemInfo {
   id: number;
   ref: number;
   subject: string;
+  description: string;
+  tags: string[];
   /** OCC version, required for patches. */
   version: number;
   status: number;
@@ -56,6 +58,20 @@ export interface TaigaItemInfo {
 export interface TaigaItemPatch {
   status?: number;
   assigned_to?: number;
+  /** Taiga posts a comment when a patch carries one. */
+  comment?: string;
+}
+
+/** A project's custom field definition ("MR", "Ветка"). */
+export interface TaigaCustomAttribute {
+  id: number;
+  name: string;
+}
+
+/** An item's custom field values, keyed by attribute id, with their own OCC version. */
+export interface TaigaCustomAttributeValues {
+  values: Record<string, unknown>;
+  version: number;
 }
 
 export interface ITaigaApiClient {
@@ -70,4 +86,19 @@ export interface ITaigaApiClient {
   updateItem(entity: TaigaEntity, id: number, patch: TaigaItemPatch, version: number): Promise<void>;
   /** Resolve a project member's Taiga user id by email (case-insensitive), or null. */
   getMemberIdByEmail(projectId: number, email: string): Promise<number | null>;
+  /**
+   * Resolve a project member's email by Taiga user id, or null. Webhook payloads carry only
+   * `assigned_to.id`, so this is how an event's assignee is matched to GitLab / Pachka accounts.
+   */
+  getMemberEmailById(projectId: number, userId: number): Promise<string | null>;
+  /** Custom field definitions of the project, for resolving a field name to its id. */
+  getCustomAttributes(entity: TaigaEntity, projectId: number): Promise<TaigaCustomAttribute[]>;
+  getCustomAttributeValues(entity: TaigaEntity, itemId: number): Promise<TaigaCustomAttributeValues>;
+  /** Patch custom field values (merged with the current ones by the caller). */
+  setCustomAttributeValues(
+    entity: TaigaEntity,
+    itemId: number,
+    values: Record<string, unknown>,
+    version: number,
+  ): Promise<void>;
 }

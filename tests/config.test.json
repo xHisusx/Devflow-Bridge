@@ -1,0 +1,40 @@
+{
+  "plane": { "baseUrl": "http://plane.test.local" },
+  "webhooks": {},
+  "pachka": {
+    "chatIds": {
+      "test-target": 0
+    }
+  },
+  "rules": [
+    {
+      "workspace": "test-ws",
+      "project": "TestProject",
+      "on": { "action": "created" },
+      "notify": ["test-target"],
+      "message": "[E2E-TEST] #{{seq}} {{title}} ({{state}})"
+    },
+    {
+      "workspace": "test-ws",
+      "project": "TestProject",
+      "on": { "action": "updated", "state": "Done" },
+      "notify": ["test-target"],
+      "message": "[E2E-DONE] #{{seq}} {{title}}",
+      "actions": [
+        { "type": "reaction", "emoji": "\u2705" },
+        { "type": "threadReply", "message": "State: {{state}}" },
+        { "type": "buttons", "buttons": [{ "text": "Open", "url": "{{issueUrl}}" }] }
+      ]
+    },
+    {
+      "workspace": "test-ws",
+      "project": "TestProject",
+      "on": { "action": "updated", "stateGroup": ["backlog", "unstarted", "started", "cancelled"] },
+      "notify": ["test-target"],
+      "message": "[E2E-UPD] #{{seq}} {{title}}",
+      "actions": [
+        { "type": "editPrevious", "message": "[E2E-EDITED] #{{seq}} {{title}} -> {{state}}" }
+      ]
+    }
+  ]
+}

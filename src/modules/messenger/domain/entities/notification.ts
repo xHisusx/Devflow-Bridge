@@ -1,4 +1,4 @@
-import type { StateGroup, PlaneEntity } from "../../../plane/domain/entities";
+import type { StateGroup } from "../../../plane/domain/entities";
 import type { BitrixContent } from "../../../../core/config";
 
 // Content для to: "plane" — маппинг полей из request body
@@ -10,6 +10,59 @@ export interface PlaneContent {
 export interface NotifyContent {
   message: string;
   actions?: RuleAction[];
+  /**
+   * DM mode only (`pachka` provider with `dm: true`): recipient of the personal message —
+   * a work email or a numeric Pachka user id. Templated like any other content value.
+   */
+  recipient?: string;
+}
+
+// ── Content для to: "gitlab:*" — декларативные операции в репозитории ──
+
+export interface GitLabMrContent {
+  title?: string;
+  description?: string;
+  /** Target branch; defaults to the provider's `mr.target` / `defaultBranch`. */
+  target?: string;
+  draft?: boolean;
+  labels?: string[];
+  removeSourceBranch?: boolean;
+  squash?: boolean;
+  /** Email of the person the MR is assigned to; resolved to a GitLab user. */
+  assigneeEmail?: string;
+  reviewerEmails?: string | string[];
+}
+
+export interface GitLabIssueContent {
+  title: string;
+  description?: string;
+  labels?: string[];
+  assigneeEmail?: string;
+}
+
+/**
+ * Each declared key is one operation, executed in this order: `branch` (create if missing),
+ * `mr` (create or reuse the open MR for that branch), `issue`, `comment` (note on the MR).
+ */
+export interface GitLabContent {
+  /** Repository override ("group/repo"); defaults to the tag map, then the provider's `project`. */
+  repo?: string;
+  /** Tags consulted against the provider's `repoByTag` map. */
+  tags?: string | string[];
+  /** Branch name (template). Defaults to the provider's `branch.pattern`. */
+  branch?: string;
+  /** Branch type for `{{branchType}}`, overriding the provider's `branch.typeByTag` lookup. */
+  branchType?: string;
+  /** Base ref of the new branch. Defaults to the provider's `defaultBranch`. */
+  ref?: string;
+  /** Work email of the assignee — source of the MR assignee and of `{{initials}}`. */
+  assigneeEmail?: string;
+  /** Full name of the assignee — fallback source of `{{initials}}`. */
+  assigneeName?: string;
+  mr?: GitLabMrContent;
+  issue?: GitLabIssueContent;
+  comment?: string;
+  [key: string]: unknown;
 }
 
 export function isNotifyContent(content: unknown): content is NotifyContent {
@@ -32,20 +85,68 @@ export type RuleAction =
   | { type: "pin" };
 
 export interface RuleOn {
-  // ── Match conditions (Plane-trigger only) ──
-  // Evaluated by rule-matcher only when the pipeline source is a Plane webhook event (first step).
-  // Ignored for api:intake-sourced pipelines and for non-first steps.
-  action?: "create" | "update" | "delete";
-  entity?: PlaneEntity | PlaneEntity[];
+  // ── Match conditions (trigger step only) ──
+  // Evaluated by rule-matcher (Plane webhook events) or taiga-trigger (Taiga webhook events) on the
+  // pipeline's first step. Ignored for api:intake / form-sourced pipelines and for non-first steps.
+  /**
+   * Plane: create|update|delete. Taiga: create|change|delete.
+   * GitLab: open|close|reopen|update|approved|merge (push events read as "push").
+   * A list is an OR, as everywhere else.
+   */
+  action?: string | string[];
+  /** Plane: issue|work_item|task|... Taiga: issue|user_story|task. */
+  entity?: string | string[];
   state?: string | string[];
   stateGroup?: StateGroup | StateGroup[];
   priority?: string | string[];
-  /** Taiga webhook status condition (used with `from: taiga:*`). */
+
+  // ── Taiga trigger conditions ──
+  /** Status name(s) the item must have after the event ("New", "In progress"). */
   status?: string | string[];
+  /** Issue type name(s) ("Ошибка", "Вопрос"). Issues only. */
+  type?: string | string[];
+  /** Field name(s) that must appear in the event's change diff ("assigned_to", "status"). */
+  changed?: string | string[];
+  /**
+   * Tag name(s) the item must carry; matches when any of them is set (case-insensitive). Use it
+   * to keep a pipeline to the tasks it is meant for — e.g. only those tagged with a repository.
+   */
+  tags?: string | string[];
+  /**
+   * Sprint (milestone) filter: "any" — the item (for a task: its user story) is in some sprint,
+   * "none" — it is in none, or the sprint name(s) it must be in.
+   */
+  sprint?: string | string[];
+  /**
+   * Assignment filter:
+   * - "first" — the item just got its first assignee (created with one, or changed from empty)
+   * - "any" — an assignee is set
+   * - "none" — no assignee
+   */
+  assigned?: "first" | "any" | "none";
+
+  // ── GitLab trigger conditions ──
+  /** Webhook event kind: merge_request | push | tag_push | issue | note | pipeline. */
+  event?: string | string[];
+  /** Target branch of the merge request ("master"). */
+  target?: string | string[];
+  /** Source branch of the merge request, or the branch that was pushed to. */
+  branch?: string | string[];
+  /** Label name(s) on the merge request; matches when any of them is set. */
+  labels?: string | string[];
+  /** Draft state of the merge request. */
+  draft?: boolean;
 
   // ── Step payload (all sources) ──
-  content: PlaneContent | NotifyContent | BitrixContent;
+  content: PlaneContent | NotifyContent | GitLabContent | BitrixContent;
   outputs?: string[]; // fields this step exposes to subsequent steps (defaults to the provider schema)
+  /**
+   * Run this step at most once per key, remembered across restarts. `true` derives the key from
+   * the step and the item it is about (plus the recipient for a DM); a string is a template for
+   * the key. Repository writes are idempotent on their own — this is what keeps a person from
+   * being notified again when the same task is assigned to them a second time.
+   */
+  once?: boolean | string;
 }
 
 export interface Rule {
