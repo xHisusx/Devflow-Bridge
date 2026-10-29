@@ -27,6 +27,7 @@ export class PipelineStateStore implements IPipelineStateStore {
         repo TEXT NOT NULL,
         branch TEXT NOT NULL,
         mr_iid INTEGER,
+        mr_url TEXT NOT NULL DEFAULT '',
         tracker TEXT NOT NULL,
         task_id TEXT NOT NULL,
         task_url TEXT NOT NULL DEFAULT '',
@@ -36,7 +37,14 @@ export class PipelineStateStore implements IPipelineStateStore {
         PRIMARY KEY (repo, branch)
       )
     `);
+    // `mr_url` came later than the table: databases created before it get the column on open.
+    const columns = this.db.query("PRAGMA table_info(task_links)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "mr_url")) {
+      this.db.run("ALTER TABLE task_links ADD COLUMN mr_url TEXT NOT NULL DEFAULT ''");
+    }
+
     this.db.run("CREATE INDEX IF NOT EXISTS task_links_mr ON task_links (repo, mr_iid)");
+    this.db.run("CREATE INDEX IF NOT EXISTS task_links_task ON task_links (tracker, task_id)");
   }
 
   markOnce(key: string): boolean {
@@ -53,10 +61,12 @@ export class PipelineStateStore implements IPipelineStateStore {
   rememberTaskLink(link: TaskLink): void {
     this.db
       .query(
-        `INSERT INTO task_links (repo, branch, mr_iid, tracker, task_id, task_url, task_identifier, task_name)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO task_links (repo, branch, mr_iid, mr_url, tracker, task_id, task_url, task_identifier, task_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (repo, branch) DO UPDATE SET
            mr_iid = COALESCE(excluded.mr_iid, task_links.mr_iid),
+           -- A later run that found no merge request must not erase the one already known.
+           mr_url = CASE WHEN excluded.mr_url = '' THEN task_links.mr_url ELSE excluded.mr_url END,
            tracker = excluded.tracker,
            task_id = excluded.task_id,
            task_url = excluded.task_url,
@@ -67,6 +77,7 @@ export class PipelineStateStore implements IPipelineStateStore {
         link.repo,
         link.branch,
         link.mrIid,
+        link.mrUrl,
         link.tracker,
         link.taskId,
         link.taskUrl,
@@ -88,12 +99,23 @@ export class PipelineStateStore implements IPipelineStateStore {
       .get(repo, branch) as Row | null;
     return row ? toLink(row) : null;
   }
+
+  findLinkByTask(tracker: string, taskId: string): TaskLink | null {
+    const row = this.db
+      .query(
+        `SELECT * FROM task_links WHERE tracker = ? AND task_id = ?
+         ORDER BY (mr_iid IS NULL), created_at DESC LIMIT 1`,
+      )
+      .get(tracker, taskId) as Row | null;
+    return row ? toLink(row) : null;
+  }
 }
 
 interface Row {
   repo: string;
   branch: string;
   mr_iid: number | null;
+  mr_url: string;
   tracker: string;
   task_id: string;
   task_url: string;
@@ -106,6 +128,7 @@ function toLink(row: Row): TaskLink {
     repo: row.repo,
     branch: row.branch,
     mrIid: row.mr_iid,
+    mrUrl: row.mr_url,
     tracker: row.tracker,
     taskId: row.task_id,
     taskUrl: row.task_url,

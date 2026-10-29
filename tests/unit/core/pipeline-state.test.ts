@@ -29,6 +29,7 @@ describe("PipelineStateStore: task links", () => {
     repo: "team/backend",
     branch: "feat/am/fix",
     mrIid: 7,
+    mrUrl: "https://git.test/team/backend/-/merge_requests/7",
     tracker: "taiga:dev",
     taskId: "777",
     taskUrl: "https://taiga.test/project/dev/us/42",
@@ -57,11 +58,23 @@ describe("PipelineStateStore: task links", () => {
   test("a later run without an MR keeps the one already recorded", () => {
     const s = store();
     s.rememberTaskLink(link);
-    s.rememberTaskLink({ ...link, mrIid: null, taskName: "Переименованная задача" });
+    s.rememberTaskLink({ ...link, mrIid: null, mrUrl: "", taskName: "Переименованная задача" });
 
     const found = s.findTaskByMr("team/backend", 7);
     expect(found?.mrIid).toBe(7);
+    expect(found?.mrUrl).toBe("https://git.test/team/backend/-/merge_requests/7");
     expect(found?.taskName).toBe("Переименованная задача");
+  });
+
+  test("a link is found by the task it was made for", () => {
+    const s = store();
+    s.rememberTaskLink({ ...link, repo: "team/web", branch: "feat/am/web", mrIid: null, mrUrl: "" });
+    s.rememberTaskLink(link);
+
+    // The one that already has a merge request wins, so a card can show it.
+    expect(s.findLinkByTask("taiga:dev", "777")?.repo).toBe("team/backend");
+    expect(s.findLinkByTask("taiga:dev", "778")).toBeNull();
+    expect(s.findLinkByTask("taiga:other", "777")).toBeNull();
   });
 });
 

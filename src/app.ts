@@ -149,7 +149,9 @@ export function createApp(deps: AppDependencies) {
     .get("/health", () => ({ ok: true }))
     .use(planeWebhookRoute({ useCase, eventBus, webhookSecret }))
     .use(taigaWebhookRoute({
-      useCase: new ProcessTaigaWebhookUseCase(registry, pachkaClient, messageStore, config),
+      useCase: new ProcessTaigaWebhookUseCase(
+        registry, pachkaClient, messageStore, config, pipelineState,
+      ),
       trigger: taigaTrigger,
       webhookSecret: taigaWebhookSecret,
     }))
@@ -161,7 +163,9 @@ export function createApp(deps: AppDependencies) {
       messengerClient: pachkaClient,
       messageStore,
       taigaFeedback: taigaClients.size > 0
-        ? new HandleTaigaFeedbackUseCase(registry, taigaClients, pachkaClient, config, messageStore)
+        ? new HandleTaigaFeedbackUseCase(
+            registry, taigaClients, pachkaClient, config, messageStore, pipelineState,
+          )
         : null,
       openFormView: pachkaClient && formProviders.length > 0
         ? new OpenFormViewUseCase(registry, pachkaClient, messageStore)

@@ -3,12 +3,13 @@ import type { Config, TaigaEntity, TaigaProvider } from "../../../../core/config
 import type { ITaigaApiClient, TaigaProjectInfo } from "../ports/taiga-api.port";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
 import type { IMessageStore } from "../../../messenger/application/ports/message-store.port";
+import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
 import {
   buildFeedbackButtons,
   keepLinkButtons,
   TAIGA_CALLBACK_PREFIX,
 } from "../../domain/services/feedback-buttons";
-import { findNotifyTemplate, buildItemVars } from "../services/feedback-message";
+import { findNotifyTemplate, buildItemVars, withCardVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
 import {
   DEFAULT_WORK_EMAIL_FIELD,
@@ -48,6 +49,7 @@ export class HandleTaigaFeedbackUseCase {
     private messengerClient: IMessengerClient | null,
     private config: Config | null = null,
     private messageStore: IMessageStore | null = null,
+    private pipelineState: IPipelineStateStore | null = null,
   ) {}
 
   static matches(data: string | undefined): data is string {
@@ -159,7 +161,11 @@ export class HandleTaigaFeedbackUseCase {
         ? findNotifyTemplate(this.config, `taiga:${provider.alias}`, target)
         : null;
       if (template) {
-        const vars = await buildItemVars(client, provider, project, itemId);
+        const vars = withCardVars(
+          await buildItemVars(client, provider, project, itemId),
+          this.pipelineState,
+          `taiga:${provider.alias}`,
+        );
         content = renderMessage(template, vars);
       } else {
         content = current.content;

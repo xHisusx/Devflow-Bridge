@@ -13,6 +13,8 @@ export interface TaskLink {
   branch: string;
   /** Null until the merge request is opened. */
   mrIid: number | null;
+  /** Web URL of that merge request; empty until it is opened. */
+  mrUrl: string;
   /** Provider ref the task lives in ("taiga:dev"), so a write-back targets the right instance. */
   tracker: string;
   taskId: string;
@@ -30,4 +32,10 @@ export interface IPipelineStateStore {
   rememberTaskLink(link: TaskLink): void;
   findTaskByMr(repo: string, mrIid: number): TaskLink | null;
   findTaskByBranch(repo: string, branch: string): TaskLink | null;
+  /**
+   * The repository work recorded for a tracker item — the reverse lookup. A tracker event carries
+   * no branch or merge request, so this is what lets a card about the item be re-rendered with
+   * them. Prefers a link that already has a merge request, then the most recent one.
+   */
+  findLinkByTask(tracker: string, taskId: string): TaskLink | null;
 }

@@ -2,6 +2,7 @@ import type { ProviderRegistry } from "../../../../core/provider-registry";
 import type { Config, TaigaProvider, PachkaProvider } from "../../../../core/config";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
 import type { IMessageStore } from "../../../messenger/application/ports/message-store.port";
+import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
 import {
   buildFeedbackButtons,
   keepLinkButtons,
@@ -9,7 +10,7 @@ import {
   buildItemUrl,
 } from "../../domain/services/feedback-buttons";
 import { extractProjectSlug } from "../../domain/services/taiga-trigger";
-import { findNotifyTemplate } from "../services/feedback-message";
+import { findNotifyTemplate, withCardVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
 import type { TaigaWebhookPayload } from "../../domain/entities/taiga-webhook-payload";
 import { log } from "../../../../core/logger";
@@ -35,6 +36,7 @@ export class ProcessTaigaWebhookUseCase {
     private messengerClient: IMessengerClient | null,
     private messageStore: IMessageStore | null,
     private config: Config | null = null,
+    private pipelineState: IPipelineStateStore | null = null,
   ) {}
 
   async execute(payload: TaigaWebhookPayload): Promise<TaigaWebhookResult> {
@@ -66,7 +68,11 @@ export class ProcessTaigaWebhookUseCase {
       const buttonsMap = provider.feedback.buttons ?? {};
       const key = Object.keys(buttonsMap).find((k) => k.toLowerCase() === statusName.toLowerCase());
       const nextButtons = buildFeedbackButtons(provider.alias, itemId, key ? buttonsMap[key] : []);
-      const vars = this.buildVars(provider, payload, itemId, statusName);
+      const vars = withCardVars(
+        this.buildVars(provider, payload, itemId, statusName),
+        this.pipelineState,
+        `taiga:${provider.alias}`,
+      );
 
       for (const pachka of this.registry.getByType("pachka") as PachkaProvider[]) {
         const messageId = this.messageStore.get(String(itemId), pachka.alias);
