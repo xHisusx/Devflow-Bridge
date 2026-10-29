@@ -106,10 +106,13 @@ paths:
       summary: Приём вебхуков от Taiga
       operationId: taigaWebhook
       description: |
-        Принимает вебхуки Taiga (Settings → Integrations → Webhooks). При смене статуса
-        item'а кнопки и текст отслеживаемого сообщения в Пачке синхронизируются с новым
-        статусом. Провайдер определяется по slug проекта из `data.project.permalink`.
+        Принимает вебхуки Taiga (Settings → Integrations → Webhooks). Делает две независимые
+        вещи: (1) при смене статуса item'а синхронизирует кнопки и текст отслеживаемого
+        сообщения в Пачке; (2) запускает пайплайны, чей первый шаг — `from: "taiga:<alias>"`
+        (например «появился первый исполнитель» → ветка и draft MR в GitLab → ЛС исполнителю).
+        Провайдер определяется по slug проекта из `data.project.permalink`.
         Тестовый пинг (`action: "test"`) отвечает `200 ok`.
+        Ответ: `{ "ok": true, "updated": <синхронизировано сообщений>, "triggered": <запущено пайплайнов> }`.
       parameters:
         - name: x-taiga-webhook-signature
           in: header
@@ -128,6 +131,56 @@ paths:
           description: Вебхук обработан
         "401":
           description: Невалидная подпись
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /webhook/gitlab:
+    post:
+      summary: Приём вебхуков от GitLab
+      operationId: gitlabWebhook
+      description: |
+        Принимает вебхуки GitLab (Settings → Webhooks в проекте или группе) и запускает
+        пайплайны, чей первый шаг — `from: "gitlab:<alias>"` (например «MR влит в master» →
+        перевод задачи в Taiga). Провайдер выбирается по репозиторию события: его `project`,
+        значения `repoByTag` или всё внутри `groups`.
+
+        Задача трекера подставляется из связи «ветка/MR → item», записанной шагом
+        `to: gitlab:*`; в самих payload'ах GitLab id задачи нет.
+
+        Ответ: `{ "ok": true, "triggered": <запущено пайплайнов> }`.
+      parameters:
+        - name: x-gitlab-token
+          in: header
+          schema:
+            type: string
+          description: |
+            Secret token вебхука, передаётся как есть (не подпись). Проверяется, если задан
+            GITLAB_WEBHOOK_SECRET или GITLAB_WEBHOOK_SECRET_<ALIAS>.
+        - name: x-gitlab-event
+          in: header
+          schema:
+            type: string
+          description: Тип события ("Merge Request Hook", "Push Hook", ...)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Стандартный payload вебхука GitLab (object_kind, project, object_attributes...)
+      responses:
+        "200":
+          description: Вебхук обработан
+        "400":
+          description: Тело запроса не является JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Неверный secret token
           content:
             application/json:
               schema:
