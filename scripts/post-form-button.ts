@@ -8,13 +8,16 @@
  *   bun run scripts/post-form-button.ts devops-request devops-support
  *   bun run scripts/post-form-button.ts devops-request 41685736 "Нужна помощь DevOps?" "📝 Создать заявку"
  *
- * Requires PACHKA_API_TOKEN (Bun loads .env automatically). Config is resolved the same way
- * as the server (CONFIG_PATH -> config/default.json -> config.json).
+ * Requires PACHKA_API_TOKEN (read from .env, which wins over the shell — same as the server).
+ * Config is resolved the same way as the server (CONFIG_PATH -> config/default.json -> config.json).
  */
 import { loadConfig } from "../src/core/config";
+import { loadDotEnv } from "../src/core/env";
 import { ProviderRegistry } from "../src/core/provider-registry";
 import { PachkaClient } from "../src/modules/messenger/infrastructure/clients/pachka-api-client";
 import { buildFormOpenData } from "../src/modules/messenger/domain/entities/form";
+
+await loadDotEnv();
 
 const [formAlias, target, messageArg, buttonTextArg] = process.argv.slice(2);
 
