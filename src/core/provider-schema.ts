@@ -117,6 +117,8 @@ const GITLAB_STEP_OUTPUTS: readonly string[] = [
   "taskName",
   "taskUrl",
   "taskIdentifier",
+  "taskProject",
+  "taskStatus",
 ];
 
 /**
@@ -154,7 +156,8 @@ const GITLAB_TRIGGER_OUTPUTS: readonly string[] = [
 /**
  * Extra template vars a `to: gitlab:*` step computes for its *own* content, on top of whatever
  * the upstream step exposes: the transliterated title, the assignee's initials, the resolved
- * repository, and `task*` (the source item, named so it survives the step's own issue fields).
+ * repository, and `task*` (the source item — named so it survives the step's own issue fields —
+ * including the project it lives in and the status it is in).
  * Must mirror the `vars` built in run-gitlab-step.ts.
  */
 export const GITLAB_COMPUTED_VARS: readonly string[] = [
@@ -169,6 +172,8 @@ export const GITLAB_COMPUTED_VARS: readonly string[] = [
   "taskName",
   "taskUrl",
   "taskIdentifier",
+  "taskProject",
+  "taskStatus",
 ];
 
 /**

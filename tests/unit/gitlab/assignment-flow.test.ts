@@ -66,7 +66,9 @@ const PIPELINE: Rule[] = [
     on: {
       content: {
         recipient: "{{assigneeEmail}}",
-        message: "🆕 На вас задача: [{{taskName}}]({{taskUrl}})\nВетка: `{{branch}}`",
+        message:
+          "🆕 **[{{taskProject}}] На вас задача:** [{{taskName}}]({{taskUrl}})\n" +
+          "Статус: {{taskStatus}}\nВетка: `{{branch}}`",
         actions: [
           {
             type: "buttons",
@@ -197,8 +199,8 @@ describe("first assignment -> branch + draft MR + DM", () => {
     // 4. DM to the assignee's personal chat, resolved through the work-email profile field
     expect(messenger.sendMessage).toHaveBeenCalledWith(
       101,
-      "🆕 На вас задача: [Исправить баг в отчётах](https://taiga.test/project/dev/us/42)\n" +
-        "Ветка: `feat/am/ispravit-bag-v-otchetah`",
+      "🆕 **[Dev] На вас задача:** [Исправить баг в отчётах](https://taiga.test/project/dev/us/42)\n" +
+        "Статус: New\nВетка: `feat/am/ispravit-bag-v-otchetah`",
       {
         entityType: "user",
         buttons: [
