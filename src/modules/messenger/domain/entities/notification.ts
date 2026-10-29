@@ -1,5 +1,5 @@
 import type { StateGroup } from "../../../plane/domain/entities";
-import type { BitrixContent } from "../../../../core/config";
+import type { BitrixContent, TaigaFeedbackButton } from "../../../../core/config";
 
 // Content для to: "plane" — маппинг полей из request body
 export interface PlaneContent {
@@ -15,6 +15,17 @@ export interface NotifyContent {
    * a work email or a numeric Pachka user id. Templated like any other content value.
    */
   recipient?: string;
+  /**
+   * Taiga status name -> the callback buttons *this* card carries once the item reaches that
+   * status, overriding the provider-wide `feedback.buttons` for this step alone (a status with
+   * no entry here leaves the card without action buttons).
+   *
+   * One item is shown in several places at once — a DM to the developer, the team channel, the
+   * testing channel — and a transition means something different in each: the tester may return
+   * the task or finish it, while the developer has nothing to press until it comes back. A step
+   * already owns the text of the card it sends, so it owns its buttons too.
+   */
+  buttonsByStatus?: Record<string, TaigaFeedbackButton[]>;
 }
 
 // ── Content для to: "gitlab:*" — декларативные операции в репозитории ──
@@ -117,6 +128,15 @@ export interface RuleOn {
    * "none" — it is in none, or the sprint name(s) it must be in.
    */
   sprint?: string | string[];
+  /**
+   * Roll-up filter: every task of the user story this event belongs to (for a task event — its
+   * parent story; for a story event — the story itself) is in one of the named statuses, and the
+   * story has at least one task. Costs an API call, so it is checked last.
+   *
+   * This is how "the work is finished" is told from "a piece of the work is finished": a story is
+   * delivered task by task, and only the last of them makes the story itself ready.
+   */
+  allTasks?: string | string[];
   /**
    * Assignment filter:
    * - "first" — the item just got its first assignee (created with one, or changed from empty)

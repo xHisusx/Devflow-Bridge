@@ -200,6 +200,7 @@ export function taigaClientMock(overrides: Partial<ITaigaApiClient> = {}): ITaig
       }),
     ),
     getItemStatuses: mock(() => Promise.resolve([])),
+    getTasksOfUserStory: mock(() => Promise.resolve([])),
     getIssueTypes: mock(() => Promise.resolve([])),
     getPriorities: mock(() => Promise.resolve([])),
     updateItem: mock(() => Promise.resolve()),

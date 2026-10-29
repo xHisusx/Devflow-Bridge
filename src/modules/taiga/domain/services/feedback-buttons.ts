@@ -16,6 +16,20 @@ export function buildFeedbackButtons(
 }
 
 /**
+ * The button set configured for a status, matched case-insensitively — Taiga status names are
+ * written by hand in both the config and the project ("In progress" / "In Progress"). A status
+ * with no entry has no action buttons.
+ */
+export function buttonsForStatus(
+  map: Record<string, TaigaFeedbackButton[]> | undefined,
+  statusName: string | null | undefined,
+): TaigaFeedbackButton[] {
+  if (!map || !statusName) return [];
+  const key = Object.keys(map).find((k) => k.toLowerCase() === statusName.toLowerCase());
+  return key ? map[key] : [];
+}
+
+/**
  * Link buttons of a message, as Pachka returns them (rows of buttons).
  *
  * A status transition replaces what can be *done* next, not where the task lives: a DM whose
