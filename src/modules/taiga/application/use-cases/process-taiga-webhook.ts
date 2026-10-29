@@ -25,6 +25,9 @@ export interface TaigaWebhookResult {
  * Taiga -> Pachka sync: when an item's status or assignee changes in Taiga (manually or via our
  * feedback buttons), re-render the tracked Pachka message (template of the pipeline rule) and
  * swap its buttons to the set configured for the current status.
+ *
+ * Pipelines started by a Taiga event (`from: "taiga:<alias>"`) are a separate concern and belong
+ * to ProcessTaigaTriggerUseCase; the webhook route runs both on the same payload.
  */
 export class ProcessTaigaWebhookUseCase {
   constructor(
@@ -41,10 +44,13 @@ export class ProcessTaigaWebhookUseCase {
     }
 
     const diff = payload.change?.diff ?? {};
-    const relevantChange = "status" in diff || "assigned_to" in diff;
+    // Taiga emits a dedicated `close` action for closing an item; unlike `change`,
+    // it may not include change.diff, so treat it as a status change itself.
+    const isCloseAction = payload.action === "close";
+    const relevantChange = isCloseAction || "status" in diff || "assigned_to" in diff;
     const itemId = payload.data?.id;
     const statusName = payload.data?.status?.name;
-    if (payload.action !== "change" || !relevantChange || !itemId || !statusName) {
+    if (!(payload.action === "change" || isCloseAction) || !relevantChange || !itemId || !statusName) {
       return { ok: true, updated: 0 };
     }
     if (!this.messengerClient || !this.messageStore) {

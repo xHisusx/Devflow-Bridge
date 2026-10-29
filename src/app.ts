@@ -22,6 +22,7 @@ import { PachkaUserDirectory } from "./modules/messenger/application/services/pa
 import type { IPlaneApiClient } from "./modules/plane/application/ports/plane-api.port";
 import type { ITaigaApiClient } from "./modules/taiga/application/ports/taiga-api.port";
 import type { IGitLabApiClient } from "./modules/gitlab/application/ports/gitlab-api.port";
+import type { IBitrixClient } from "./modules/bitrix/application/ports/bitrix-api.port";
 import type { IPipelineStateStore } from "./core/persistence/pipeline-state.port";
 import { parseRef } from "./modules/messenger/domain/entities/notification";
 import { log } from "./core/logger";
@@ -45,6 +46,8 @@ export interface AppDependencies {
   taigaClients?: Map<string, ITaigaApiClient>;
   /** GitLab API clients keyed by provider ref ("gitlab:<alias>"). */
   gitlabClients?: Map<string, IGitLabApiClient>;
+  /** Bitrix API clients keyed by provider ref ("bitrix:<alias>"). */
+  bitrixClients?: Map<string, IBitrixClient>;
   /** Intake API keys keyed by provider ref ("api:<alias>"). Missing entry = endpoint without auth. */
   intakeApiKeys?: Map<string, string>;
   /** Durable pipeline state: `once` guards and branch/MR -> tracker item links. */
@@ -56,6 +59,7 @@ export function createApp(deps: AppDependencies) {
   const planeClients = deps.planeClients ?? new Map<string, IPlaneApiClient>();
   const taigaClients = deps.taigaClients ?? new Map<string, ITaigaApiClient>();
   const gitlabClients = deps.gitlabClients ?? new Map<string, IGitLabApiClient>();
+  const bitrixClients = deps.bitrixClients ?? new Map<string, IBitrixClient>();
   const pipelineState = deps.pipelineState ?? null;
 
   const eventBus = new EventBus();
@@ -76,13 +80,18 @@ export function createApp(deps: AppDependencies) {
     gitlabClients,
     userDirectory,
     pipelineState,
+    bitrixClients,
   );
 
   const formProviders = registry.getByType("form");
 
   // Form pipelines may target only pachka/webhook, so form providers alone justify the engine.
   const intakePipeline =
-    planeClients.size > 0 || taigaClients.size > 0 || gitlabClients.size > 0 || formProviders.length > 0
+    planeClients.size > 0 ||
+    taigaClients.size > 0 ||
+    gitlabClients.size > 0 ||
+    bitrixClients.size > 0 ||
+    formProviders.length > 0
       ? new ProcessIntakePipelineUseCase(
           config,
           registry,
@@ -93,6 +102,7 @@ export function createApp(deps: AppDependencies) {
           gitlabClients,
           userDirectory,
           pipelineState,
+          bitrixClients,
         )
       : null;
 

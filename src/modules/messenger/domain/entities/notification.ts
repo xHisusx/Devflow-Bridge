@@ -1,4 +1,5 @@
 import type { StateGroup } from "../../../plane/domain/entities";
+import type { BitrixContent } from "../../../../core/config";
 
 // Content для to: "plane" — маппинг полей из request body
 export interface PlaneContent {
@@ -137,7 +138,7 @@ export interface RuleOn {
   draft?: boolean;
 
   // ── Step payload (all sources) ──
-  content: PlaneContent | NotifyContent | GitLabContent;
+  content: PlaneContent | NotifyContent | GitLabContent | BitrixContent;
   outputs?: string[]; // fields this step exposes to subsequent steps (defaults to the provider schema)
   /**
    * Run this step at most once per key, remembered across restarts. `true` derives the key from

@@ -97,6 +97,13 @@ bun test tests/e2e/  # только e2e-тесты (требуют PACHKA_TEST_T
 - `infrastructure/clients/gitlab-api-client.ts` — `GitLabApiClient` (REST v4 через fetch), `GitLabApiError`
 - `infrastructure/webhooks/gitlab-webhook.route.ts` — Elysia-plugin: `POST /webhook/gitlab`
 
+### Модуль Bitrix (`src/modules/bitrix/`)
+
+- `domain/entities/status.ts` — `StatusType`, `BitrixStatusRequest`, `BitrixStatusResponse`
+- `application/ports/bitrix-api.port.ts` — интерфейс `IBitrixClient`
+- `application/services/update-bitrix-status.ts` — `parseBitrixIdFromDescription()` (BitrixID из описания задачи), `updateBitrixStatusFromTaiga()`, `BitrixMappingError`
+- `infrastructure/clients/bitrix-api-client.ts` — `BitrixApiClient` (implements `IBitrixClient`, `PUT /support/appeal/status/`)
+
 ### Модуль GitHub (`src/modules/github/`) — заглушка для будущей интеграции
 
 ### Принципы
@@ -132,11 +139,12 @@ E2E-тесты отправляют реальные сообщения в Па�
 ### Структура тестов
 
 - `tests/helpers.ts` — утилиты: создание payload, ожидание сообщений, cleanup
-- `tests/mocks.ts` — общие моки портов (`messengerClientMock`, `taigaClientMock`, `gitlabClientMock`, `messageStoreMock`, `pipelineStateMock`, `pachkaMessage`)
+- `tests/mocks.ts` — общие моки портов (`messengerClientMock`, `taigaClientMock`, `gitlabClientMock`, `bitrixClientMock`, `messageStoreMock`, `pipelineStateMock`, `pachkaMessage`)
 - `tests/unit/core/` — тесты core (logger, slug, provider-schema drift guards)
 - `tests/unit/plane/` — тесты plane domain (rule-matcher, template-renderer)
 - `tests/unit/taiga/` — тесты taiga (триггер, feedback, создание/обновление item)
 - `tests/unit/gitlab/` — тесты gitlab-шага, триггера, резолва пользователей и сквозные сценарии «назначение → ветка + MR + ЛС» и «MR влит → статус в Taiga»
+- `tests/unit/bitrix/` — тесты bitrix (разбор BitrixID, шаг `to: bitrix:*`, сквозной сценарий «закрытие в Taiga → статус обращения» через `createApp`)
 - `tests/unit/messenger/` — тесты messenger (message-store, формы, ЛС)
 - `tests/e2e/` — полный цикл: webhook -> сервер -> Pachka API -> проверка
 
@@ -255,7 +263,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 | Значение | Описание |
 |---|---|
 | `"plane"` | Plane (через webhook) |
-| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса). Условия: `action` (`create`/`change`/`delete`), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story) |
+| `"taiga:<alias>"` | Вебхук Taiga: событие item'а (создание, назначение, смена статуса, закрытие). Условия: `action` (`create`/`change`/`close`/`delete`; закрытие приходит отдельным `close` без диффа), `entity` (`issue`/`user_story`/`task`), `status`, `type`, `priority`, `changed` (поле в диффе), `tags` (есть хотя бы один из тегов), `assigned` (`first`/`any`/`none`), `sprint` (`any`/`none`/имя; у task берётся спринт родительской user story) |
 | `"gitlab:<alias>"` | Вебхук GitLab: событие репозитория (MR открыт/смержен/закрыт, push). Условия: `event`, `action`, `state`, `target`, `branch`, `draft`, `labels` |
 | `"api:intake"` | API endpoint `/api/plane/intake-issues` |
 | `"form:<alias>"` | Отправка формы Пачки (модального представления) провайдера `form:<alias>` |
@@ -266,6 +274,7 @@ E2E-тесты отправляют реальные сообщения в Па�
 | `"plane:<alias>"` | Создать задачу в Plane-провайдере `<alias>` (workspace/project из провайдера). Работает и в intake-, и в webhook-пайплайнах (последнее = mirror/escalate: создать задачу по событию). Использует тот же путь создания, что и intake. |
 | `"taiga:<alias>"` | Создать item в Taiga-провайдере `<alias>` (issue / user story / task — тип задаётся полем `entity` провайдера, по умолчанию `issue`). Если в `content` есть `item` — не создать, а **обновить** существующий item (`customFields`, `status`, `assigneeEmail`, `comment`). Работает и в intake-, и в webhook-пайплайнах. Attachments не поддерживаются. |
 | `"gitlab:<alias>"` | Операции в репозитории GitLab-провайдера `<alias>`: `branch` (создать/переиспользовать), `mr` (создать/переиспользовать draft MR), `issue`, `comment` (нота к MR) |
+| `"bitrix:<alias>"` | Проставить статус обращения Bitrix (`Closed` / `Rejected`). Id обращения берётся из описания задачи (`**BitrixID:** 12345`), а не из `content`; без него шаг пропускается с warning |
 | `"pachka:<channel>"` | Уведомить в Пачку, channel = alias `pachka`-провайдера. У провайдера с `"dm": true` — в ЛС получателю из `content.recipient` (рабочая почта или user id) |
 | `"webhook:<name>"` | Отправить через webhook, name = alias `webhook`-провайдера |
 
@@ -319,6 +328,34 @@ E2E-тесты отправляют реальные сообщения в Па�
 - Ошибка создания MR не роняет шаг: ветка остаётся, `mrUrl` пустой, причина — в логе.
 - Все плейсхолдеры шаблона ветки обязаны разрешиться, иначе `GitLabWriteError` (чтобы не появлялись ветки вида `feat/`).
 - Шаг `to: gitlab:*` запоминает связь `репозиторий + ветка → задача трекера` (+ iid MR) в `PipelineStateStore`. Это единственный путь обратно: в вебхуках GitLab id задачи нет.
+
+### Bitrix-провайдер
+
+```jsonc
+{
+  "type": "bitrix",
+  "alias": "support",
+  "baseUrl": "https://portal.example.com/api/v1"   // корень API, без пути /support/appeal/status/
+}
+```
+
+Токен из env: `BITRIX_API_TOKEN_<ALIAS>` с откатом на `BITRIX_API_TOKEN` (схема как у Plane/Taiga/GitLab); нет токена — старт падает.
+
+Провайдер умеет одно — проставить статус обращения (`PUT /support/appeal/status/`), т.е. замкнуть intake-поток «заявка из Bitrix → задача в трекере». `content`: `status` (`"Closed"` | `"Rejected"`, обязателен, проверяется валидацией конфига) и `resolution` (опционально, default «Статус изменён в Taiga»).
+
+Id обращения в `content` не передаётся — шаг читает его из `description` источника (`**BitrixID:** 12345`, также `BitrixID: 12345` и `**Bitrix ID:** 12345`), туда его кладёт intake-шаг. Задача без BitrixID — не ошибка: шаг пропускается с warning (`BitrixMappingError`), потому что не каждая заявка приходит из Bitrix.
+
+Типовой сценарий — «задачу закрыли в Taiga → закрыть обращение» (Taiga присылает закрытие отдельным событием `close`, поэтому условие именно `"action": "close"`, а разделяет случаи `status`):
+
+```json
+{
+  "from": "taiga:ikn", "to": "bitrix:support",
+  "on": {
+    "action": "close", "status": "Closed",
+    "content": { "status": "Closed", "resolution": "Обращение закрыто в Taiga" }
+  }
+}
+```
 
 ### Вебхук GitLab → триггер пайплайна
 
@@ -391,6 +428,8 @@ E2E-тесты отправляют реальные сообщения в Па�
 - **Secret key**: произвольная строка; та же строка должна быть в env `TAIGA_WEBHOOK_SECRET`. Подпись — HMAC-SHA1 от raw body в заголовке `X-TAIGA-WEBHOOK-SIGNATURE`; при пустом `TAIGA_WEBHOOK_SECRET` подпись не проверяется.
 
 Провайдер события определяется по slug проекта из `data.project.permalink`; тестовый пинг Taiga (`action: "test"`) отвечает `200 ok`.
+
+Синхронизация сообщения (`ProcessTaigaWebhookUseCase`) и запуск пайплайнов (`ProcessTaigaTriggerUseCase`) — две независимые ветки одного роута: одно событие может и перерисовать карточку, и запустить пайплайн, и падение одной не скрывает другую. Ответ: `{ "ok": true, "updated": <сообщений>, "triggered": <пайплайнов> }`. Всё, что запускается событием Taiga (в том числе `to: bitrix:*`), идёт через триггер и общий движок пайплайнов, а не отдельным путём.
 
 ### Формы Пачки (модальные представления)
 
@@ -578,6 +617,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 | `taiga:<alias>` (результат шага, `to: taiga:*`) | `issueId`, `issueUrl`, `seq` (ref), `identifier` (`#ref`), `name`, `title`, `description`, `labels`, `project`, `action`, `status`, `assignee`, `type`, `priority` |
 | `gitlab:<alias>` (триггер, первый шаг webhook-пайплайна) | `event`, `action`, `state`, `repo`, `repoUrl`, `branch`, `target`, `mrIid`, `mrUrl`, `mrTitle`, `draft`, `merged`, `labels`, `author`, `authorEmail`, `commits`, `lastCommit`, `sha`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `receivedAt` |
 | `gitlab:<alias>` (результат шага, `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier` |
+| `bitrix:<alias>` (результат шага, `to: bitrix:*`) | `bitrixId`, `status`, `resolution`, `response`, `provider` |
 | `pachka:<alias>` | `messageId`, `chatId`, `channel`, `message` |
 | `webhook:<alias>` | `channel`, `message` |
 | `form:<alias>` (триггер, отправка формы) | `data`, `user`, `userId`, `chatId`, `receivedAt`, `meta` |

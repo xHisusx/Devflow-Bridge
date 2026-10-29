@@ -41,10 +41,19 @@ export function normalizeTaigaEntity(type: string | undefined): TaigaEntity {
   return "issue";
 }
 
+/**
+ * `update` is what Plane-style rules call Taiga's `change`, so it reads as a synonym. Taiga's
+ * `close` stays a value of its own: it is a separate event (and arrives without a `change.diff`),
+ * so a rule asks for it explicitly with `action: "close"`.
+ */
+export function normalizeTaigaAction(action: string): string {
+  return action === "update" ? "change" : action;
+}
+
 export function extractTaigaFacts(payload: TaigaWebhookPayload): TaigaTriggerFacts {
   const data = payload.data ?? {};
   const diff = payload.change?.diff ?? {};
-  const action = payload.action === "update" ? "change" : payload.action;
+  const action = normalizeTaigaAction(payload.action);
   const assigneeDiff = diffOf(diff.assigned_to);
   const hasAssignee = Boolean(data.assigned_to);
 
@@ -75,8 +84,8 @@ export function extractTaigaFacts(payload: TaigaWebhookPayload): TaigaTriggerFac
  * are OR (same as Plane rules). `changed` matches when *any* of the named fields is in the diff.
  */
 export function matchesTaigaCondition(on: RuleOn, facts: TaigaTriggerFacts): boolean {
-  // "update" is accepted as a synonym of Taiga's "change".
-  const actions = asArray(on.action).map((a) => (a === "update" ? "change" : String(a)));
+  // "update" is accepted as a synonym of Taiga's "change" (see normalizeTaigaAction).
+  const actions = asArray(on.action).map((a) => normalizeTaigaAction(String(a)));
   if (actions.length > 0 && !actions.includes(facts.action)) return false;
 
   const entities = asArray(on.entity).map((e) => normalizeTaigaEntity(String(e)));

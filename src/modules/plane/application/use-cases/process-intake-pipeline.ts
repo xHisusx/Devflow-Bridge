@@ -1,4 +1,4 @@
-import type { Config } from "../../../../core/config";
+import type { Config, BitrixContent } from "../../../../core/config";
 import type { ProviderRegistry } from "../../../../core/provider-registry";
 import type { IPlaneApiClient } from "../ports/plane-api.port";
 import type { IMessengerClient } from "../../../messenger/application/ports/messenger-client.port";
@@ -21,6 +21,11 @@ import { rememberTaskLink } from "../../../gitlab/application/services/task-link
 import type { GitLabContent } from "../../../messenger/domain/entities/notification";
 import type { PachkaUserDirectory } from "../../../messenger/application/services/pachka-user-directory";
 import { resolvePachkaTarget } from "../../../messenger/application/services/resolve-pachka-target";
+import type { IBitrixClient } from "../../../bitrix/application/ports/bitrix-api.port";
+import {
+  BitrixMappingError,
+  updateBitrixStatusFromTaiga,
+} from "../../../bitrix/application/services/update-bitrix-status";
 import { log } from "../../../../core/logger";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
@@ -57,6 +62,7 @@ export class ProcessIntakePipelineUseCase {
     private gitlabClients: Map<string, IGitLabApiClient> = new Map(),
     private userDirectory: PachkaUserDirectory | null = null,
     private pipelineState: IPipelineStateStore | null = null,
+    private bitrixClients: Map<string, IBitrixClient> = new Map(),
   ) {}
 
   /**
@@ -101,8 +107,9 @@ export class ProcessIntakePipelineUseCase {
     let result: { id: string; issue_id: string; sequence_id: number } | null = null;
     const attachments: string[] = [];
     let notificationsSent = 0;
-    // Repository work is a completed step on its own, even in a pipeline that writes no tracker item.
-    let repoStepsDone = 0;
+    // Writing elsewhere (a repository, a Bitrix appeal) is a completed step on its own, even in a
+    // pipeline that creates no tracker item.
+    let sideEffectSteps = 0;
     // Refs of steps that did not run, so the steps reading from them are skipped as well.
     const skipped = new Set<string>();
 
@@ -143,7 +150,7 @@ export class ProcessIntakePipelineUseCase {
           context.set(step.to, filterOutputs(stepResult.outputs, step.on.outputs));
         } else if (toType === "gitlab") {
           const outputs = await this.executeGitlabStep(step, sourceOutputs);
-          repoStepsDone++;
+          sideEffectSteps++;
           // Remember what the branch and MR are for, so a GitLab webhook can find the item again.
           rememberTaskLink(this.pipelineState, step.from, outputs);
           context.set(step.to, filterOutputs(outputs, step.on.outputs));
@@ -165,6 +172,15 @@ export class ProcessIntakePipelineUseCase {
             this.releaseOnce(guard);
             skipped.add(step.to);
           }
+        } else if (toType === "bitrix") {
+          const outputs = await this.executeBitrixStep(step, sourceOutputs);
+          if (outputs) {
+            sideEffectSteps++;
+            context.set(step.to, filterOutputs(outputs, step.on.outputs));
+          } else {
+            this.releaseOnce(guard);
+            skipped.add(step.to);
+          }
         } else {
           this.releaseOnce(guard);
           log.warn(`Step "${step.to}": unsupported target type "${toType}"`);
@@ -177,9 +193,9 @@ export class ProcessIntakePipelineUseCase {
     }
 
     if (!result) {
-      const ok = repoStepsDone > 0 || notificationsSent > 0;
+      const ok = sideEffectSteps > 0 || notificationsSent > 0;
       if (ok) {
-        log.info("Pipeline completed", { repoSteps: repoStepsDone, notifications: notificationsSent });
+        log.info("Pipeline completed", { steps: sideEffectSteps, notifications: notificationsSent });
       }
       return { ok, attachments: [], notifications_sent: notificationsSent };
     }
@@ -440,6 +456,45 @@ export class ProcessIntakePipelineUseCase {
       log.error(`Intake notification failed`, { target: step.to, error: String(e) });
       return null;
     }
+  }
+
+  /**
+   * Set the status of the Bitrix appeal the tracker item came from. Returns null when the item
+   * carries no BitrixID: not every request originates in Bitrix, so that is a skip, not an error.
+   */
+  private async executeBitrixStep(
+    step: Rule,
+    source: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    const provider = this.registry.getBitrix(step.to);
+    if (!provider) throw new IntakePipelineError(`Bitrix provider "${step.to}" not found`);
+    const client = this.bitrixClients.get(step.to);
+    if (!client) throw new IntakePipelineError(`No Bitrix API client configured for "${step.to}"`);
+
+    let outputs: Record<string, unknown>;
+    try {
+      outputs = await updateBitrixStatusFromTaiga(
+        client,
+        provider,
+        source,
+        step.on.content as BitrixContent,
+      );
+    } catch (error) {
+      if (error instanceof BitrixMappingError) {
+        log.warn("Bitrix step skipped: BitrixID is absent from Taiga description", {
+          provider: step.to,
+          error: error.message,
+        });
+        return null;
+      }
+      throw error;
+    }
+    log.info("Bitrix appeal status updated", {
+      provider: step.to,
+      bitrixId: outputs.bitrixId,
+      status: outputs.status,
+    });
+    return outputs;
   }
 }
 

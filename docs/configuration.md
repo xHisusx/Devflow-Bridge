@@ -166,6 +166,22 @@ Email → пользователь ищется так: `GET /users?query=<email
 
 Работает без API-токена, но `actions` для webhook-целей игнорируются.
 
+### `bitrix` — обращения Bitrix
+
+```jsonc
+{
+  "type": "bitrix",
+  "alias": "support",
+  "baseUrl": "https://portal.example.com/api/v1"   // корень API, без пути /support/appeal/status/
+}
+```
+
+Токен из env: `BITRIX_API_TOKEN_<ALIAS>` с откатом на `BITRIX_API_TOKEN` (схема как у Plane/Taiga/GitLab); нет токена — старт падает.
+
+Провайдер умеет одно: **проставить статус обращения** (`PUT /support/appeal/status/`). Это обратная сторона intake-потока «заявка из Bitrix → задача в трекере»: когда задачу закрывают в Taiga, обращение в Bitrix закрывается вместе с ней.
+
+Номер обращения не передаётся отдельным полем — он берётся из описания задачи, куда его записал intake-шаг (`**BitrixID:** 12345`; распознаётся и `BitrixID: 12345`, и `**Bitrix ID:** 12345`). Задача без BitrixID — не ошибка: шаг пропускается с warning, потому что не каждая заявка приходит из Bitrix.
+
 ### `api` — HTTP intake-эндпоинт
 
 ```jsonc
@@ -244,7 +260,7 @@ Email → пользователь ищется так: `GET /users?query=<email
 
 ```jsonc
 "on": {
-  "action": "change",         // create | change (синоним update) | delete
+  "action": "change",         // create | change (синоним update) | close | delete
   "entity": "user_story",     // issue | user_story | task; без него берётся entity провайдера
   "status": "In progress",    // имя статуса после события (string | string[], без учёта регистра)
   "type": "Ошибка",           // тип запроса (только issue)
@@ -256,6 +272,8 @@ Email → пользователь ищется так: `GET /users?query=<email
 ```
 
 `assigned: "first"` срабатывает и когда задачу создали сразу с исполнителем, и когда исполнитель сменился с пустого на кого-то; переназначение (A → B) под условие **не** попадает. На событии `create` диффа нет, поэтому `changed` с ним не сочетается.
+
+Закрытие item'а Taiga присылает отдельным событием `close` — и **без** `change.diff`, поэтому `changed` с ним тоже не сочетается, а `action: "change"` его не ловит: условие нужно писать как `"action": "close"` и отбирать по `status`.
 
 `tags` — воротами по тегам пайплайн ограничивается задачами, которые его касаются. Типичный случай: ветку и MR нужно заводить только под «кодовые» задачи, а дизайн, аналитика и QA живут в том же спринте и трогать их не нужно. Теги те же, по которым `repoByTag` выбирает репозиторий, поэтому держите оба списка согласованными: задача с тегом не из списка просто не запустит пайплайн (ничего не создастся и в лог попадёт только отсутствие срабатывания).
 
@@ -304,6 +322,7 @@ System hook — способ получить «глобальный секре�
 | `plane:<alias>` | Создать задачу в Plane (workspace/project — из провайдера) |
 | `taiga:<alias>` | Создать item в Taiga, либо **обновить** существующий (если в `content` есть `item`) |
 | `gitlab:<alias>` | Операции в репозитории: ветка, MR, issue, комментарий |
+| `bitrix:<alias>` | Проставить статус обращения Bitrix (`Closed` / `Rejected`), id — из описания задачи |
 | `pachka:<alias>` | Отправить сообщение в чат Пачки через API (или в ЛС — у `dm`-провайдера) |
 | `webhook:<alias>` | Отправить текст через incoming webhook |
 
@@ -362,6 +381,17 @@ System hook — способ получить «глобальный секре�
 ```
 
 Пустой объект `"mr": {}` — создать MR на дефолтах провайдера. Шаблоны внутри `mr` / `issue` резолвятся так же, как на верхнем уровне.
+
+**Для `to: bitrix:*`** — статус обращения:
+
+```jsonc
+"content": {
+  "status": "Closed",                            // "Closed" | "Rejected"
+  "resolution": "Обращение закрыто в Taiga"      // опционально (default: "Статус изменён в Taiga")
+}
+```
+
+Шаблонов здесь нет: id обращения шаг читает из `description` источника, а не из `content`.
 
 **Для `to: pachka:*` / `to: webhook:*`** — шаблон уведомления:
 
@@ -424,6 +454,7 @@ System hook — способ получить «глобальный секре�
 | `taiga:*` (результат шага `to: taiga:*`) | `issueId`, `issueUrl`, `seq`, `identifier`, `name`, `title`, `description`, `labels`, `project`, `action`, `status`, `assignee`, `type`, `priority` |
 | `gitlab:*` (триггер webhook-пайплайна) | `event`, `action`, `state`, `repo`, `repoUrl`, `branch`, `target`, `mrIid`, `mrUrl`, `mrTitle`, `draft`, `merged`, `labels`, `author`, `authorEmail`, `commits`, `lastCommit`, `sha`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `receivedAt` |
 | `gitlab:*` (результат шага `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier` |
+| `bitrix:*` (результат шага `to: bitrix:*`) | `bitrixId`, `status`, `resolution`, `response`, `provider` |
 | `pachka:*` | `messageId`, `chatId`, `channel`, `message` |
 | `webhook:*` | `channel`, `message` |
 | `form:*` (триггер) | `data`, `user`, `userId`, `chatId`, `receivedAt`, `meta` |
@@ -562,6 +593,53 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 - **Secret key**: произвольная строка; та же строка — в env `TAIGA_WEBHOOK_SECRET`. Подпись — HMAC-SHA1 от raw body в `X-TAIGA-WEBHOOK-SIGNATURE`; при пустом секрете подпись не проверяется.
 
 Провайдер определяется по slug проекта из `data.project.permalink`; тестовый пинг Taiga (`action: "test"`) отвечает `200 ok`.
+
+Синхронизация кнопок и пайплайны-триггеры — независимые вещи: одно событие может и перерисовать отслеживаемую карточку, и запустить пайплайн, и падение одного не скрывает другое. В ответе роута это два разных счётчика: `{ "ok": true, "updated": <сообщений>, "triggered": <пайплайнов> }`.
+
+---
+
+## Заявка из Bitrix → задача в Taiga → закрытие обратно в Bitrix
+
+Обратная связь с Bitrix: заявка приходит на intake-эндпоинт, BitrixID остаётся в описании задачи, а закрытие задачи в Taiga проставляет статус обращению.
+
+```json
+[
+  [
+    {
+      "from": "api:intake-support", "to": "taiga:ikn",
+      "on": {
+        "action": "create",
+        "content": {
+          "name": "{{body.name}}",
+          "description": "{{body.description}}\n\n---\n\n**BitrixID:** {{body.bitrixId}}  \n**BitrixURL:** {{body.bitrixLink}}"
+        }
+      }
+    }
+  ],
+  [
+    {
+      "from": "taiga:ikn", "to": "bitrix:support",
+      "on": {
+        "action": "close", "status": "Closed",
+        "content": { "status": "Closed", "resolution": "Обращение закрыто в Taiga" }
+      }
+    }
+  ],
+  [
+    {
+      "from": "taiga:ikn", "to": "bitrix:support",
+      "on": {
+        "action": "close", "status": "Rejected",
+        "content": { "status": "Rejected", "resolution": "Обращение отклонено в Taiga" }
+      }
+    }
+  ]
+]
+```
+
+- Единственный канал связи между системами — строка `**BitrixID:** 12345` в описании задачи, поэтому intake-шаг обязан её записать. Задача, созданная не из Bitrix, просто пропустит шаг (warning в лог).
+- `action: "close"` — Taiga присылает закрытие отдельным событием; `status` разделяет «закрыто» и «отклонено», так что на каждый статус Bitrix нужно своё правило.
+- Статусов у провайдера только два — `Closed` и `Rejected`; любое другое значение `content.status` отлавливается валидацией конфига при старте.
 
 ---
 
@@ -703,6 +781,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 | `TAIGA_WEBHOOK_SECRET` | нет | Секрет вебхука Taiga (HMAC-SHA1) |
 | `GITLAB_TOKEN` / `GITLAB_TOKEN_<ALIAS>` | при gitlab-провайдерах | Токен GitLab со скоупом `api`: group/project access token с ролью Developer, PAT бота или админский PAT (последний ищет людей по приватному email) |
 | `GITLAB_WEBHOOK_SECRET[_<ALIAS>]` | нет | Secret token вебхука GitLab (`X-Gitlab-Token`); без него payload не проверяется |
+| `BITRIX_API_TOKEN` / `BITRIX_API_TOKEN_<ALIAS>` | при bitrix-провайдерах | Токен Bitrix для смены статуса обращения |
 | `INTAKE_API_KEY` / `INTAKE_API_KEY_<ALIAS>` | при api-провайдерах | Ключ intake-эндпоинта (кроме `"auth": false`) |
 | `MESSAGE_DB_PATH` | нет | Путь к SQLite с отправленными сообщениями (default: `data/messages.sqlite`) |
 | `PIPELINE_DB_PATH` | нет | Путь к SQLite с состоянием пайплайнов: `once`-ключи и связи ветка/MR → задача (default: `data/pipeline.sqlite`) |

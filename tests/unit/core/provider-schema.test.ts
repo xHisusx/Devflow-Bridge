@@ -6,10 +6,11 @@ import { createTaigaIssueFromContent } from "../../../src/modules/taiga/applicat
 import { updateTaigaItemFromContent } from "../../../src/modules/taiga/application/services/update-taiga-item";
 import { buildTaigaTriggerOutputs } from "../../../src/modules/taiga/domain/services/taiga-trigger";
 import { runGitLabStep } from "../../../src/modules/gitlab/application/services/run-gitlab-step";
-import type { GitLabProvider, PlaneProvider, TaigaProvider } from "../../../src/core/config";
+import { updateBitrixStatusFromTaiga } from "../../../src/modules/bitrix/application/services/update-bitrix-status";
+import type { BitrixProvider, GitLabProvider, PlaneProvider, TaigaProvider } from "../../../src/core/config";
 import type { IPlaneApiClient } from "../../../src/modules/plane/application/ports/plane-api.port";
 import type { ITaigaApiClient } from "../../../src/modules/taiga/application/ports/taiga-api.port";
-import { gitlabClientMock, taigaClientMock } from "../../mocks";
+import { bitrixClientMock, gitlabClientMock, taigaClientMock } from "../../mocks";
 
 const sorted = (xs: readonly string[]) => [...xs].sort();
 
@@ -96,5 +97,21 @@ describe("provider-schema drift guards", () => {
 
     expect(sorted(Object.keys(outputs))).toEqual(sorted(getProviderOutputs("gitlab")));
     expect(sorted(getProviderOutputs("gitlab"))).toEqual(sorted(PROVIDER_OUTPUTS.gitlab));
+  });
+
+  test("BITRIX step outputs match the declared step schema", async () => {
+    const provider: BitrixProvider = {
+      type: "bitrix", alias: "support", baseUrl: "http://bitrix.test/api",
+    };
+
+    const outputs = await updateBitrixStatusFromTaiga(
+      bitrixClientMock(),
+      provider,
+      { description: "**BitrixID:** 42" },
+      { status: "Closed" },
+    );
+
+    expect(sorted(Object.keys(outputs))).toEqual(sorted(getProviderOutputs("bitrix")));
+    expect(sorted(getProviderOutputs("bitrix"))).toEqual(sorted(PROVIDER_OUTPUTS.bitrix));
   });
 });

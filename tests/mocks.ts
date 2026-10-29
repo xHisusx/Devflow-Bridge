@@ -4,6 +4,7 @@ import type { IMessengerClient } from "../src/modules/messenger/application/port
 import type { IMessageStore } from "../src/modules/messenger/application/ports/message-store.port";
 import type { ITaigaApiClient } from "../src/modules/taiga/application/ports/taiga-api.port";
 import type { IGitLabApiClient } from "../src/modules/gitlab/application/ports/gitlab-api.port";
+import type { IBitrixClient } from "../src/modules/bitrix/application/ports/bitrix-api.port";
 import type { IPipelineStateStore, TaskLink } from "../src/core/persistence/pipeline-state.port";
 
 /**
@@ -203,6 +204,13 @@ export function taigaClientMock(overrides: Partial<ITaigaApiClient> = {}): ITaig
     getCustomAttributes: mock(() => Promise.resolve([])),
     getCustomAttributeValues: mock(() => Promise.resolve({ values: {}, version: 1 })),
     setCustomAttributeValues: mock(() => Promise.resolve()),
+    ...overrides,
+  };
+}
+
+export function bitrixClientMock(overrides: Partial<IBitrixClient> = {}): IBitrixClient {
+  return {
+    updateStatus: mock(() => Promise.resolve({ status: "ok", data: [], errors: [] })),
     ...overrides,
   };
 }

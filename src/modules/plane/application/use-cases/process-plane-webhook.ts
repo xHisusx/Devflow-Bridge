@@ -1,4 +1,4 @@
-import type { Config } from "../../../../core/config";
+import type { Config, BitrixContent } from "../../../../core/config";
 import type { ProviderRegistry } from "../../../../core/provider-registry";
 import type { PlaneStateInline } from "../../domain/entities/issue";
 import type { PlaneMember } from "../../domain/entities/member";
@@ -28,6 +28,11 @@ import { runGitLabStep } from "../../../gitlab/application/services/run-gitlab-s
 import type { GitLabContent } from "../../../messenger/domain/entities/notification";
 import type { PachkaUserDirectory } from "../../../messenger/application/services/pachka-user-directory";
 import { resolvePachkaTarget } from "../../../messenger/application/services/resolve-pachka-target";
+import type { IBitrixClient } from "../../../bitrix/application/ports/bitrix-api.port";
+import {
+  BitrixMappingError,
+  updateBitrixStatusFromTaiga,
+} from "../../../bitrix/application/services/update-bitrix-status";
 import type { Rule } from "../../../messenger/domain/entities/notification";
 import { log } from "../../../../core/logger";
 
@@ -57,6 +62,7 @@ export class ProcessPlaneWebhookUseCase {
     private gitlabClients: Map<string, IGitLabApiClient> = new Map(),
     private userDirectory: PachkaUserDirectory | null = null,
     private pipelineState: IPipelineStateStore | null = null,
+    private bitrixClients: Map<string, IBitrixClient> = new Map(),
   ) {
     this.deduplicator = new Deduplicator();
   }
@@ -184,6 +190,9 @@ export class ProcessPlaneWebhookUseCase {
       if (toType === "gitlab") {
         return await this.executeGitlabStep(step, source);
       }
+      if (toType === "bitrix") {
+        return await this.executeBitrixStep(step, source);
+      }
 
       const content = step.on.content as NotifyContent;
       const message = renderMessage(content.message ?? DEFAULT_TEMPLATE, source);
@@ -309,5 +318,37 @@ export class ProcessPlaneWebhookUseCase {
     );
     log.debug(`-> ${step.to}: branch="${outputs.branch}" mr=${outputs.mrUrl || "—"}`);
     return outputs;
+  }
+
+  /** Set the status of the Bitrix appeal the item came from (skipped when it carries no id). */
+  private async executeBitrixStep(
+    step: Rule,
+    source: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    const provider = this.registry.getBitrix(step.to);
+    const client = this.bitrixClients.get(step.to);
+    if (!provider || !client) {
+      log.warn(`-> ${step.to}: bitrix provider or API client not configured`);
+      return null;
+    }
+    try {
+      const outputs = await updateBitrixStatusFromTaiga(
+        client,
+        provider,
+        source,
+        step.on.content as BitrixContent,
+      );
+      log.debug(`-> ${step.to}: updated Bitrix appeal ${outputs.bitrixId}`);
+      return outputs;
+    } catch (e) {
+      // Not every item originates in Bitrix, so a missing id is a skip rather than a failure.
+      if (e instanceof BitrixMappingError) {
+        log.warn(`-> ${step.to}: no BitrixID in the item description, step skipped`, {
+          error: e.message,
+        });
+        return null;
+      }
+      throw e;
+    }
   }
 }

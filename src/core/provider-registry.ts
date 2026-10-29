@@ -1,4 +1,4 @@
-import type { Provider, PlaneProvider, PachkaProvider, WebhookProvider, ApiProvider, TaigaProvider, GitLabProvider, FormProvider } from "./config";
+import type { Provider, PlaneProvider, PachkaProvider, WebhookProvider, ApiProvider, TaigaProvider, GitLabProvider, FormProvider, BitrixProvider } from "./config";
 
 export class ProviderRegistry {
   private map = new Map<string, Provider>();
@@ -46,6 +46,11 @@ export class ProviderRegistry {
   getForm(ref: string): FormProvider | undefined {
     const p = this.map.get(ref);
     return p?.type === "form" ? p : undefined;
+  }
+
+  getBitrix(ref: string): BitrixProvider | undefined {
+    const p = this.map.get(ref);
+    return p?.type === "bitrix" ? p : undefined;
   }
 
   getByType(type: string): Provider[] {

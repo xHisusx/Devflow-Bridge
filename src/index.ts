@@ -1,6 +1,7 @@
 import type { PlaneMember } from "./modules/plane/domain/entities/member";
 import type {
   ApiProvider,
+  BitrixProvider,
   GitLabProvider,
   PachkaProvider,
   PlaneProvider,
@@ -17,6 +18,7 @@ import { createApp } from "./app";
 import { loadConfig, validateConfig } from "./core/config";
 import { loadDotEnv } from "./core/env";
 import { log } from "./core/logger";
+import { BitrixApiClient } from "./modules/bitrix/infrastructure/clients/bitrix-api-client";
 
 // Load config & env. .env first and with precedence over the inherited environment: a variable
 // exported by the shell (or set machine-wide) must not quietly replace the project's credentials.
@@ -136,6 +138,20 @@ if (gitlabProviders.length > 0 && gitlabWebhookSecrets.length === 0) {
   );
 }
 
+// Build one Bitrix client per provider, token resolution as everywhere else:
+// BITRIX_API_TOKEN_<ALIAS> falling back to BITRIX_API_TOKEN.
+const bitrixProviders = registry.getByType("bitrix") as BitrixProvider[];
+const bitrixClients = new Map<string, BitrixApiClient>();
+for (const p of bitrixProviders) {
+  const suffix = p.alias.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const token = process.env[`BITRIX_API_TOKEN_${suffix}`] ?? process.env.BITRIX_API_TOKEN;
+  if (!token) {
+    throw new Error(`No token for bitrix provider "${p.alias}": set BITRIX_API_TOKEN_${suffix} or BITRIX_API_TOKEN`);
+  }
+  bitrixClients.set(`bitrix:${p.alias}`, new BitrixApiClient(token, p.baseUrl));
+  log.info(`Bitrix client initialized for "${p.alias}"`, { baseUrl: p.baseUrl });
+}
+
 // Resolve intake API keys per api provider, same scheme as plane/taiga:
 // INTAKE_API_KEY_<ALIAS> falling back to INTAKE_API_KEY. A provider may opt out with "auth": false.
 const intakeApiKeys = new Map<string, string>();
@@ -249,6 +265,7 @@ createApp({
   planeClients,
   taigaClients,
   gitlabClients,
+  bitrixClients,
   intakeApiKeys,
   pipelineState,
 }).listen(port);

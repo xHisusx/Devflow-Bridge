@@ -180,6 +180,24 @@ export interface FormProvider {
   blocks?: FormBlock[];
 }
 
+// ── Bitrix ──
+
+export type BitrixStatus = "Closed" | "Rejected";
+
+export interface BitrixProvider {
+  type: "bitrix";
+  alias: string;
+  /** Bitrix API root, without the /support/appeal/status/ path. */
+  baseUrl: string;
+}
+
+export interface BitrixContent {
+  /** Bitrix status to set. The appeal id is extracted from the Taiga description. */
+  status: BitrixStatus;
+  /** Optional resolution sent to Bitrix. */
+  resolution?: string;
+}
+
 export type Provider =
   | PlaneProvider
   | PachkaProvider
@@ -187,7 +205,8 @@ export type Provider =
   | ApiProvider
   | TaigaProvider
   | GitLabProvider
-  | FormProvider;
+  | FormProvider
+  | BitrixProvider;
 
 // ── Config ──
 
@@ -404,6 +423,13 @@ export function validateConfig(
         }
         if (toProvider.type === "pachka" && toProvider.dm && content && isNotifyContent(content) && !content.recipient) {
           log.warn(`${label}: "${rule.to}" is a DM provider — content needs a "recipient" (email or user id)`);
+        }
+      } else if (toProvider?.type === "bitrix") {
+        const bitrixContent = content as Partial<BitrixContent> | undefined;
+        if (!bitrixContent?.status) {
+          log.warn(`${label}: bitrix content must include "status"`);
+        } else if (bitrixContent.status !== "Closed" && bitrixContent.status !== "Rejected") {
+          log.warn(`${label}: unsupported Bitrix status "${bitrixContent.status}"`);
         }
       }
     }

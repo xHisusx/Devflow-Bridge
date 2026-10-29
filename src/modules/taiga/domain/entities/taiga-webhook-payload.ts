@@ -9,7 +9,7 @@ export interface TaigaWebhookUser {
 
 /** Relevant subset of Taiga's webhook payload (nested objects come pre-serialized). */
 export interface TaigaWebhookPayload {
-  /** "create" | "change" | "delete" | "test". */
+  /** "create" | "change" | "close" | "delete" | "test". */
   action: string;
   /** "issue" | "userstory" | "task" | ... */
   type: string;
