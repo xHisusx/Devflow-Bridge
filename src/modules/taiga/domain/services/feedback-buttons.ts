@@ -29,17 +29,6 @@ export function buttonsForStatus(
   return key ? map[key] : [];
 }
 
-/**
- * Link buttons of a message, as Pachka returns them (rows of buttons).
- *
- * A status transition replaces what can be *done* next, not where the task lives: a DM whose
- * "Задача" and "MR" buttons vanish the moment the person takes the task leaves them with no way
- * back to either. So the links are carried over and only the callback buttons are swapped.
- */
-export function keepLinkButtons(rows: PachkaButton[][] | undefined): PachkaButton[] {
-  return (rows ?? []).flat().filter((b) => b.url && !b.data);
-}
-
 /** Display label for a Taiga status ("In progress" -> "В процессе 🚀"), falling back to the raw name. */
 export function statusLabel(
   labels: Record<string, string> | undefined,

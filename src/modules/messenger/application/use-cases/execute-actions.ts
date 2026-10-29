@@ -1,4 +1,6 @@
 import type { RuleAction } from "../../domain/entities/notification";
+import type { PachkaButton } from "../../domain/entities";
+import { keepLinkButtons } from "../../domain/services/action-executor";
 import type { IMessengerClient } from "../ports/messenger-client.port";
 import type { IMessageStore } from "../ports/message-store.port";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";
@@ -45,7 +47,20 @@ export async function executeActions(
           const text = action.message
             ? renderMessage(action.message, ctx.source)
             : (ctx.source._currentMessage as string) ?? "";
-          await ctx.client.editMessage(prevMsgId, text);
+          // A superseded card must not keep live action buttons: it is no longer the tracked one,
+          // so pressing them would move the tracker while this message goes on showing the old
+          // state. Where it leads is another matter — links are carried over.
+          let buttons: PachkaButton[] | undefined;
+          try {
+            const previous = await ctx.client.getMessage(prevMsgId);
+            buttons = keepLinkButtons(previous.buttons);
+          } catch (e) {
+            log.warn("action: editPrevious could not read the previous message", {
+              prevMsgId,
+              error: String(e),
+            });
+          }
+          await ctx.client.editMessage(prevMsgId, text, buttons ? { buttons } : undefined);
           log.debug(`action: editPrevious on message ${prevMsgId}`);
           break;
         }

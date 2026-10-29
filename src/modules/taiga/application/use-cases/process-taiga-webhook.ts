@@ -6,10 +6,10 @@ import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-
 import {
   buildFeedbackButtons,
   buttonsForStatus,
-  keepLinkButtons,
   statusLabel,
   buildItemUrl,
 } from "../../domain/services/feedback-buttons";
+import { keepLinkButtons } from "../../../messenger/domain/services/action-executor";
 import { extractProjectSlug, normalizeTaigaEntity } from "../../domain/services/taiga-trigger";
 import { findNotifyContent, withCardVars } from "../services/feedback-message";
 import { renderMessage } from "../../../plane/domain/services/template-renderer";

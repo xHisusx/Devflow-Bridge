@@ -407,6 +407,11 @@ export class ProcessIntakePipelineUseCase {
     try {
       const chatId = destination.entityId;
       const target = pachkaProvider.alias;
+      // Read before the store is overwritten below: this is the card the new message supersedes,
+      // and after `set` the stored id is the new one, leaving `editPrevious` nothing to edit.
+      const previousMessageId = correlationId
+        ? this.messageStore.get(correlationId, target)
+        : null;
       const buttons = extractButtons(content.actions, source);
       const msg = await this.messengerClient.sendMessage(chatId, message, {
         buttons,
@@ -417,7 +422,6 @@ export class ProcessIntakePipelineUseCase {
       log.debug(`Intake -> ${step.to}: "${message}"`, { msgId: msg.id });
 
       if (content.actions && correlationId) {
-        const previousMessageId = this.messageStore.get(correlationId, target);
         await executeActions(content.actions, {
           client: this.messengerClient,
           store: this.messageStore,
