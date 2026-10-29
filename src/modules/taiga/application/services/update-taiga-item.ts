@@ -130,6 +130,10 @@ export async function updateTaigaItemFromContent(
  * A field the project does not define is skipped with a warning naming the fields it does define,
  * not an error: the write-back is an extra, and failing it would also cost the notification steps
  * that follow in the pipeline. A project that simply has no such fields needs no setup.
+ *
+ * A field whose value resolved to nothing is left as it is: these writes fill fields
+ * automatically, so a merge request that does not exist yet must not erase the one recorded
+ * before it.
  */
 async function writeCustomFields(
   client: ITaigaApiClient,
@@ -153,7 +157,14 @@ async function writeCustomFields(
       );
       continue;
     }
-    values[String(definition.id)] = value == null ? "" : String(value);
+    if (value == null || value === "") {
+      log.debug(`Taiga custom field "${definition.name}" has no value — left unchanged`, {
+        entity,
+        itemId,
+      });
+      continue;
+    }
+    values[String(definition.id)] = String(value);
     written.push(definition.name);
   }
 

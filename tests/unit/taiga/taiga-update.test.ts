@@ -62,6 +62,39 @@ describe("updateTaigaItemFromContent", () => {
     expect(outputs.labels).toEqual(["backend"]);
   });
 
+  // These writes fill fields automatically: a merge request that does not exist (yet) must not
+  // erase the one written before it.
+  test("a custom field with no value is left as it is", async () => {
+    const client = createMockClient({
+      getCustomAttributeValues: mock(() =>
+        Promise.resolve({ values: { "4": "https://git.test/mr/7" }, version: 7 }),
+      ),
+    });
+
+    await updateTaigaItemFromContent(client, PROVIDER, {
+      item: "777",
+      customFields: { MR: "", Ветка: "feat/am/ispravit-bag" },
+    });
+
+    expect(client.setCustomAttributeValues).toHaveBeenCalledWith(
+      "user_story",
+      777,
+      { "4": "https://git.test/mr/7", "5": "feat/am/ispravit-bag" },
+      7,
+    );
+  });
+
+  test("nothing is written when every declared field resolved to nothing", async () => {
+    const client = createMockClient();
+
+    await updateTaigaItemFromContent(client, PROVIDER, {
+      item: "777",
+      customFields: { MR: "", Ветка: "" },
+    });
+
+    expect(client.setCustomAttributeValues).not.toHaveBeenCalled();
+  });
+
   test("field names match case-insensitively", async () => {
     const client = createMockClient();
 
