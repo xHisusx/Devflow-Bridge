@@ -201,6 +201,7 @@ describe("MR merged -> status in Taiga", () => {
         repo: "team/backend",
         branch: "feat/am/ispravit-bag-v-otchetah",
         mrIid: 7,
+        mrUrl: "https://git.test/team/backend/-/merge_requests/7",
         tracker: "taiga:dev",
         taskId: "777",
         taskUrl: "https://taiga.test/project/dev/us/42",

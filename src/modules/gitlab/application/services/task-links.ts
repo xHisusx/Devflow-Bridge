@@ -27,6 +27,7 @@ export function rememberTaskLink(
       repo,
       branch,
       mrIid,
+      mrUrl: str(outputs.mrUrl),
       tracker,
       taskId,
       taskUrl: str(outputs.taskUrl),

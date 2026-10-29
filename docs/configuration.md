@@ -355,7 +355,7 @@ System hook — способ получить «глобальный секре�
 }
 ```
 
-`customFields` — имена кастомных полей проекта (без учёта регистра); остальные значения полей сохраняются. Неизвестное имя поля или статуса — ошибка со списком доступных.
+`customFields` — имена кастомных полей проекта (без учёта регистра); остальные значения полей сохраняются. Неизвестное имя поля — warning, шаг идёт дальше; неизвестный статус — ошибка со списком доступных. Поле, чей шаблон разрешился в пустую строку, **не перезаписывается**: шаг заполняет поля автоматически, поэтому ещё не созданный MR не должен стирать уже записанный.
 
 **Для `to: gitlab:*`** — операции в репозитории; выполняются в порядке `branch` → `mr` → `issue` → `comment`, объявлен должен быть хотя бы один:
 
@@ -453,7 +453,7 @@ System hook — способ получить «глобальный секре�
 | `taiga:*` (триггер webhook-пайплайна) | `action`, `entity`, `issueId`, `issueUrl`, `seq`, `identifier`, `name`, `title`, `description`, `project`, `status`, `statusFrom`, `type`, `priority`, `labels`, `assignee`, `assigneeEmail`, `assigneeUsername`, `assigneeInitials`, `slug`, `author`, `changedFields`, `sprint`, `parentId`, `parentSeq`, `parentIdentifier`, `parentName`, `parentUrl`, `receivedAt` |
 | `taiga:*` (результат шага `to: taiga:*`) | `issueId`, `issueUrl`, `seq`, `identifier`, `name`, `title`, `description`, `labels`, `project`, `action`, `status`, `assignee`, `type`, `priority` |
 | `gitlab:*` (триггер webhook-пайплайна) | `event`, `action`, `state`, `repo`, `repoUrl`, `branch`, `target`, `mrIid`, `mrUrl`, `mrTitle`, `draft`, `merged`, `labels`, `author`, `authorEmail`, `commits`, `lastCommit`, `sha`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `receivedAt` |
-| `gitlab:*` (результат шага `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier` |
+| `gitlab:*` (результат шага `to: gitlab:*`) | `branch`, `branchUrl`, `ref`, `repo`, `repoUrl`, `mrIid`, `mrUrl`, `mrTitle`, `mrTarget`, `issueIid`, `issueUrl`, `assignee`, `assigneeEmail`, `assigneeInitials`, `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `taskProject`, `taskStatus` |
 | `bitrix:*` (результат шага `to: bitrix:*`) | `bitrixId`, `status`, `resolution`, `response`, `provider` |
 | `pachka:*` | `messageId`, `chatId`, `channel`, `message` |
 | `webhook:*` | `channel`, `message` |
@@ -463,7 +463,7 @@ System hook — способ получить «глобальный секре�
 
 > Outputs триггера остаются доступны всем шагам пайплайна, не только второму: `from: taiga:dev` можно указать и в третьем шаге, если нужны поля исходного события.
 
-> У `gitlab` `issueUrl`/`issueIid` — это **issue в GitLab**. Исходная задача трекера доступна через `taskId`, `taskName`, `taskUrl`, `taskIdentifier` — их gitlab-шаг прокидывает дальше, чтобы следующие шаги (ЛС, запись ссылки обратно в трекер) не зависели от того, что было в начале пайплайна.
+> У `gitlab` `issueUrl`/`issueIid` — это **issue в GitLab**. Исходная задача трекера доступна через `taskId`, `taskName`, `taskUrl`, `taskIdentifier`, `taskProject` (имя проекта в трекере) и `taskStatus` (статус задачи на момент события, с применённым `statusLabels`) — их gitlab-шаг прокидывает дальше, чтобы следующие шаги (ЛС, запись ссылки обратно в трекер) не зависели от того, что было в начале пайплайна.
 
 Внутри своего `content` gitlab-шаг дополнительно видит вычисляемые переменные: `slug` (транслитерированное название), `branchType`, `assigneeInitials`, `assignee`, `assigneeEmail`, `repo`, `repoUrl` и `task*`. В шаблонах самого провайдера (`mr.title`, `mr.description`) доступны ещё и все outputs триггера — например `{{parentUrl}}` и `{{sprint}}`.
 
@@ -582,11 +582,11 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 3. `accept` и `resume` дополнительно назначают исполнителя: у нажавшего берётся email из поля `workEmailField` (fallback — email профиля), участник проекта Taiga ищется по email.
 4. После перехода кнопки-действия заменяются набором из `feedback.buttons` для нового статуса. Кнопки-ссылки (`url`) сообщение **сохраняет**: переход меняет то, что можно сделать дальше, а не то, куда ведут ссылки — иначе после «Взять в работу» из ЛС пропали бы кнопки на задачу и MR.
 5. Имена действий свободные — семантика фиксирована только для `accept`/`resume`.
-6. Outputs taiga-шага включают `status` (label), `assignee`, `type`, `priority` — можно строить «живую карточку»: при смене статуса текст сообщения перерисовывается по шаблону `content.message` правила `taiga:<alias> → pachka:<target>` со свежими значениями.
+6. Outputs taiga-шага включают `status` (label), `assignee`, `type`, `priority` — можно строить «живую карточку»: при смене статуса текст сообщения перерисовывается по шаблону `content.message` со свежими значениями. Шаблон ищется сначала у правила `taiga:<alias> → pachka:<target>`, а если такого нет — у шага `… → pachka:<target>` того пайплайна, который запускает этот же taiga-провайдер (так перерисовывается ЛС из потока «назначение → ветка + MR → ЛС», которое отправляет шаг `from: gitlab:*`). В таком шаблоне доступны и `task*` (`taskProject`, `taskIdentifier`, `taskName`, `taskUrl`, `taskStatus`), и `repo`/`branch`/`mrUrl` — ветка и MR берутся из записанной связи «ветка/MR → задача».
 
 ### Вебхук Taiga → синхронизация кнопок
 
-`POST /webhook/taiga` принимает вебхуки Taiga. При смене статуса item'а в самой Taiga кнопки отслеживаемого сообщения в Пачке обновляются — не расходятся с реальным состоянием.
+`POST /webhook/taiga` принимает вебхуки Taiga. При смене статуса item'а в самой Taiga отслеживаемое сообщение в Пачке перерисовывается, а его кнопки обновляются — карточка не расходится с реальным состоянием. Работает в обе стороны: переход `Done → To do` вернёт карточке и статус, и кнопки нового статуса (нужна запись в `feedback.buttons` для него).
 
 Настройка в Taiga (Settings → Integrations → Webhooks):
 - **URL**: `https://<хост-сервиса>/webhook/taiga`
@@ -697,7 +697,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
           "once": true,
           "content": {
             "recipient": "{{assigneeEmail}}",
-            "message": "🆕 **Вам назначена задача**\n[{{taskIdentifier}} {{taskName}}]({{taskUrl}})\n\nВетка: `{{branch}}`",
+            "message": "🆕 **[{{taskProject}}] Вам назначена задача**\n[{{taskIdentifier}} {{taskName}}]({{taskUrl}})\n\n📋 Статус: {{taskStatus}}\nВетка: `{{branch}}`",
             "actions": [
               { "type": "buttons", "buttons": [
                 { "text": "📋 Задача", "url": "{{taskUrl}}" },
@@ -744,7 +744,7 @@ bun run scripts/post-form-button.ts <form-alias> <pachka-alias|chatId> [message]
 2. **GitLab.** Репозиторий — по тегу задачи (`repoByTag`), иначе `project`. Создаётся ветка `feat/am/<название-латиницей>` от `master` и draft MR в `master`, исполнитель MR — найденный по email пользователь GitLab. Если ветка/MR уже есть — переиспользуются.
 3. **Taiga.** Ссылка на MR и имя ветки пишутся в кастомные поля задачи.
 4. **Пачка.** ЛС исполнителю (поиск по «Рабочей почте») с кнопками на задачу, MR и «Взять в работу», плюс короткая строка в чат команды. У шага ЛС стоит `once: true` — повторное назначение той же задачи тому же человеку второго сообщения не даёт.
-5. **Кнопка «Взять в работу»** — это обычный [feedback](#обратная-связь-пачка--taiga-feedback): меняет статус в Taiga и назначает нажавшего. Текст ЛС при этом **не** перерисовывается (шаблон ищется у правила `taiga:* → pachka:*`, а здесь источник шага — `gitlab:*`), меняются только кнопки-действия: «Взять в работу» уступает место «На ревью» и «Пауза», а кнопки-ссылки на задачу и MR остаются на месте.
+5. **Кнопка «Взять в работу»** — это обычный [feedback](#обратная-связь-пачка--taiga-feedback): меняет статус в Taiga и назначает нажавшего. Карточка ЛС перерисовывается по своему же шаблону (его ищут и у правила `taiga:* → pachka:*`, и у шага этого пайплайна — здесь источник шага `gitlab:*`), поэтому `{{taskStatus}}` показывает новый статус, а `repo`, `branch` и `mrUrl` берутся из записанной связи «ветка/MR → задача». Кнопки-действия меняются: «Взять в работу» уступает место «На ревью» и «Пауза», а кнопки-ссылки на задачу и MR остаются на месте. То же самое происходит, когда статус меняют в самой Taiga — в том числе обратно из `Done`.
 6. **MR влит.** GitLab присылает `merge_request` / `merge` на `POST /webhook/gitlab`. По MR (или по имени его ветки) находится связанная задача, её статус переводится в `Done`, в задачу уходит комментарий со ссылкой на MR, а в чат команды — строка о влитии. Если условие `target: "master"` не выполнено (влили в релизную ветку), пайплайн не запускается.
 
 Что нужно подготовить вне конфига:

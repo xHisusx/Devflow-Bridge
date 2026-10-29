@@ -160,6 +160,10 @@ export function pipelineStateMock(): IPipelineStateStore & { keys: Set<string>; 
     findTaskByBranch(repo: string, branch: string) {
       return links.find((l) => l.repo === repo && l.branch === branch) ?? null;
     },
+    findLinkByTask(tracker: string, taskId: string) {
+      const matching = links.filter((l) => l.tracker === tracker && l.taskId === taskId);
+      return matching.find((l) => l.mrIid != null) ?? matching[0] ?? null;
+    },
   };
 }
 

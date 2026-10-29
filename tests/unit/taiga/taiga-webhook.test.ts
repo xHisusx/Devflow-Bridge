@@ -6,7 +6,7 @@ import type { IMessengerClient } from "../../../src/modules/messenger/applicatio
 import type { IMessageStore } from "../../../src/modules/messenger/application/ports/message-store.port";
 import type { Config, Provider } from "../../../src/core/config";
 import { ProviderRegistry } from "../../../src/core/provider-registry";
-import { messengerClientMock, messageStoreMock, pachkaMessage } from "../../mocks";
+import { messengerClientMock, messageStoreMock, pachkaMessage, pipelineStateMock } from "../../mocks";
 
 const PROVIDERS: Provider[] = [
   {
@@ -157,6 +157,74 @@ describe("ProcessTaigaWebhookUseCase", () => {
     // the message is still read, but only for the link buttons it carries - the text comes from
     // the template
     expect(messengerClient.getMessage).toHaveBeenCalledWith(100);
+  });
+
+  // The DM about an assigned task is sent by the `gitlab:*` step of the pipeline the Taiga event
+  // triggered, so it speaks of the item as `task*` and shows the branch and the MR. A later status
+  // change has to re-render exactly that card.
+  test("re-renders a card sent by a gitlab step of the triggered pipeline", async () => {
+    const messengerClient = createMockMessengerClient();
+    const messageStore = createMockMessageStore({ "777:helpdesk": 100 });
+    const config: Config = {
+      providers: PROVIDERS,
+      rules: [[
+        {
+          from: "taiga:support",
+          to: "gitlab:api",
+          on: { assigned: "first", content: { branch: "feat/{{slug}}", mr: {} } },
+        },
+        {
+          from: "gitlab:api",
+          to: "pachka:helpdesk",
+          on: {
+            content: {
+              message:
+                "[{{taskProject}}] {{taskIdentifier}} {{taskName}} — {{taskStatus}}\n" +
+                "`{{repo}}` / `{{branch}}`{{#mrUrl}} · [MR]({{mrUrl}}){{/mrUrl}}",
+            },
+          },
+        },
+      ]],
+    };
+    const state = pipelineStateMock();
+    state.rememberTaskLink({
+      repo: "team/api",
+      branch: "feat/broken-login",
+      mrIid: 7,
+      mrUrl: "https://git.test/team/api/-/merge_requests/7",
+      tracker: "taiga:support",
+      taskId: "777",
+      taskUrl: "https://taiga.test/project/support-desk/issue/13",
+      taskIdentifier: "#13",
+      taskName: "Broken login",
+    });
+    const useCase = new ProcessTaigaWebhookUseCase(
+      registry, messengerClient, messageStore, config, state,
+    );
+
+    await useCase.execute(
+      changePayload({
+        data: {
+          id: 777,
+          ref: 13,
+          subject: "Broken login",
+          project: { permalink: "https://taiga.test/project/support-desk", name: "Support desk" },
+          status: { name: "In progress" },
+        },
+      }),
+    );
+
+    expect(messengerClient.editMessage).toHaveBeenCalledWith(
+      100,
+      "[Support desk] #13 Broken login — In progress\n" +
+        "`team/api` / `feat/broken-login` · [MR](https://git.test/team/api/-/merge_requests/7)",
+      {
+        buttons: [
+          { text: "⏹️ Поставить на паузу", data: "taiga:support:pause:777" },
+          { text: "✅ Завершить", data: "taiga:support:close:777" },
+        ],
+      },
+    );
   });
 
   test("assignee-only change also re-syncs the message", async () => {

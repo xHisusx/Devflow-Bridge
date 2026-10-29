@@ -94,6 +94,10 @@ export async function runGitLabStep(
     taskName,
     taskUrl: str(source.issueUrl),
     taskIdentifier: str(source.identifier),
+    // The tracker's own context, echoed so a card built from this step can name the project the
+    // task lives in and the status it is in ("[Med-2.0] ... Статус: В работе").
+    taskProject: str(source.project),
+    taskStatus: str(source.status ?? source.state),
   };
 
   const resolved = resolveDeep(
@@ -206,6 +210,8 @@ export async function runGitLabStep(
       taskName,
       taskUrl: vars.taskUrl,
       taskIdentifier: vars.taskIdentifier,
+      taskProject: vars.taskProject,
+      taskStatus: vars.taskStatus,
     },
   };
 }

@@ -1,4 +1,5 @@
 import type { Config, TaigaProvider } from "../../../../core/config";
+import type { IPipelineStateStore } from "../../../../core/persistence/pipeline-state.port";
 import { isNotifyContent } from "../../../messenger/domain/entities/notification";
 import type { ITaigaApiClient, TaigaProjectInfo } from "../ports/taiga-api.port";
 import { statusLabel, buildItemUrl } from "../../domain/services/feedback-buttons";
@@ -8,19 +9,65 @@ import { log } from "../../../../core/logger";
  * Find the notify message template of the pipeline rule taiga:<alias> -> pachka:<target>.
  * Reused to re-render the tracked message when the item's status/assignee changes,
  * so the card format lives in one place (the rule's content.message).
+ *
+ * The card is not always sent by a Taiga step: in the "task assigned -> branch + draft MR -> DM"
+ * flow the message comes from a `from: gitlab:*` step of a pipeline that a Taiga event triggered.
+ * So when no rule notifies that target directly, the pipelines this provider triggers are searched
+ * for the step that does — a card is re-rendered by the template that produced it either way.
  */
 export function findNotifyTemplate(
   config: Config,
   taigaRef: string,
   pachkaAlias: string,
 ): string | null {
+  const target = `pachka:${pachkaAlias}`;
+
   for (const pipeline of config.rules) {
     for (const rule of pipeline) {
-      if (rule.from !== taigaRef || rule.to !== `pachka:${pachkaAlias}`) continue;
+      if (rule.from !== taigaRef || rule.to !== target) continue;
       if (isNotifyContent(rule.on.content) && rule.on.content.message) return rule.on.content.message;
     }
   }
+
+  for (const pipeline of config.rules) {
+    if (pipeline[0]?.from !== taigaRef) continue;
+    for (const rule of pipeline) {
+      if (rule.to !== target) continue;
+      if (isNotifyContent(rule.on.content) && rule.on.content.message) return rule.on.content.message;
+    }
+  }
+
   return null;
+}
+
+/**
+ * Complete the vars of a card with what the tracker event itself does not carry.
+ *
+ * A card sent by a `to: gitlab:*` step names the item as `task*` and shows the branch and the
+ * merge request opened for it. Re-rendering that card after a status change has to resolve the
+ * same placeholders, so the item's own fields are aliased to their `task*` names and the
+ * repository work is recalled from the task link.
+ */
+export function withCardVars(
+  vars: Record<string, unknown>,
+  state: IPipelineStateStore | null,
+  tracker: string,
+): Record<string, unknown> {
+  const taskId = String(vars.issueId ?? "");
+  const link = taskId ? state?.findLinkByTask(tracker, taskId) ?? null : null;
+
+  return {
+    ...vars,
+    taskId: vars.issueId,
+    taskName: vars.name,
+    taskUrl: vars.issueUrl,
+    taskIdentifier: vars.identifier,
+    taskProject: vars.project,
+    taskStatus: vars.status,
+    ...(link
+      ? { repo: link.repo, branch: link.branch, mrIid: link.mrIid, mrUrl: link.mrUrl }
+      : {}),
+  };
 }
 
 /** Fetch the item's current state and build template vars (same names as taiga step outputs). */
